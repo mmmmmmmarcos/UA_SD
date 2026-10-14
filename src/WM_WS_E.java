@@ -3,7 +3,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.Properties;
 import java.util.Scanner;
-
+// Este programa simula una estación de riego que recibe órdenes de riego a través de Kafka. La estación escucha un tópico llamado "ordenes-riego" y, al recibir una orden, abre la válvula para suministrar agua. Además, permite simular una avería (fuga de agua) al pulsar 'F' y Enter, lo que hace que la estación ignore las órdenes de riego hasta que se reinicie.
 public class WM_WS_E {
     private static volatile boolean averiaSimulada = false;
 
