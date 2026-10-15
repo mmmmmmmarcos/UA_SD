@@ -1,55 +1,189 @@
-import org.apache.kafka.clients.consumer.*;
-import java.time.Duration;
-import java.util.Collections;
-import java.util.Properties;
+import java.io.*;
+import java.net.*;
 import java.util.Scanner;
-// Este programa simula una estación de riego que recibe órdenes de riego a través de Kafka. La estación escucha un tópico llamado "ordenes-riego" y, al recibir una orden, abre la válvula para suministrar agua. Además, permite simular una avería (fuga de agua) al pulsar 'F' y Enter, lo que hace que la estación ignore las órdenes de riego hasta que se reinicie.
+import java.util.Properties;
+import java.util.Collections;
+import java.time.Duration;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+
 public class WM_WS_E {
-    private static volatile boolean averiaSimulada = false;
+    // Memoria RAM compartida. Volatile fuerza la lectura directa.
+    private static volatile boolean hayFuga = false;
+    private static volatile boolean regando = false;
+    private static volatile int segundosTranscurridos = 0;
+    private static volatile int duracionObjetivo = 0;
+    
+    private static final double LITROS_MINUTO = 45.5; 
+    private static final String ID_ESTACION = "WS-01"; 
 
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.out.println("Uso: java WM_WS_E <ip_broker:puerto> <ip_monitor:puerto>");
+            System.out.println("Uso: java WM_WS_E <Broker_IP:Puerto> <Monitor_IP:Puerto>");
             return;
         }
 
-        String broker = args[0];
+        String brokerUri = args[0];
+        String[] monitorParams = args[1].split(":");
+        String monitorIp = monitorParams[0];
+        int monitorPort = Integer.parseInt(monitorParams[1]);
 
-        // Hilo asíncrono para escuchar el teclado y simular la avería (fuga)
-        new Thread(() -> {
-            Scanner scanner = new Scanner(System.in);
+        // 1. EL CRONÃ“METRO (Marcos)
+        Thread timerThread = new Thread(() -> {
             while (true) {
-                String input = scanner.nextLine();
-                if (input.equalsIgnoreCase("F")) {
-                    averiaSimulada = true;
-                    System.out.println("¡ATENCIÓN! Avería simulada (Fuga de agua detectada). Enviando KO al Monitor...");
-                    // Aquí tendrías que enviar "KO" por socket al WM_WS_M que programará Marcos
+                try {
+                    Thread.sleep(1000);
+                    if (regando) {
+                        segundosTranscurridos++;
+                        if (duracionObjetivo > 0 && segundosTranscurridos >= duracionObjetivo) {
+                            detenerRiego(brokerUri);
+                            System.out.println("\n[WS_ENGINE] Riego finalizado por temporizador.");
+                            imprimirMenu();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    break;
                 }
             }
-        }).start();
+        });
+        timerThread.start();
 
-        // Configuración Consumidor Kafka
-        Properties props = new Properties();
-        props.put("bootstrap.servers", broker);
-        props.put("group.id", "estaciones-group");
-        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-            consumer.subscribe(Collections.singletonList("ordenes-riego"));
-            System.out.println("Estación de riego iniciada. Pulsa 'F' y Enter para simular una fuga.");
-
+        // 2. EL MENÃš TÃCTIL (Marcos)
+        Thread inputThread = new Thread(() -> {
+            Scanner scanner = new Scanner(System.in);
+            imprimirMenu();
             while (true) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
-                for (ConsumerRecord<String, String> record : records) {
-                    if (!averiaSimulada) {
-                        System.out.println("Orden de riego recibida: " + record.value());
-                        System.out.println("Válvula abierta. Suministrando agua...");
+                String input = scanner.nextLine().trim().toUpperCase();
+                
+                if (input.equals("F")) {
+                    hayFuga = !hayFuga;
+                    System.out.println("[WS_ENGINE] Fuga " + (hayFuga ? "ACTIVADA" : "REPARADA"));
+                } else if (input.equals("R")) {
+                    if (!regando && !hayFuga) {
+                        System.out.print("Segundos de riego: ");
+                        try {
+                            duracionObjetivo = Integer.parseInt(scanner.nextLine());
+                            iniciarRiego();
+                        } catch (Exception e) {
+                            System.out.println("Formato invÃ¡lido.");
+                        }
                     } else {
-                        System.out.println("Orden ignorada. La estación tiene una fuga activa.");
+                        System.out.println(hayFuga ? "Hay fuga. Imposible regar." : "El agua ya corre.");
+                    }
+                } else if (input.equals("P")) {
+                    if (regando) {
+                        detenerRiego(brokerUri);
+                        System.out.println("[WS_ENGINE] Riego abortado manualmente.");
+                    } else {
+                        System.out.println("VÃ¡lvula ya cerrada.");
                     }
                 }
+                imprimirMenu();
             }
+        });
+        inputThread.start();
+
+        // 3. ANTENA KAFKA (Ãlvaro)
+        Thread kafkaThread = new Thread(() -> {
+            Properties props = new Properties();
+            props.put("bootstrap.servers", brokerUri);
+            props.put("group.id", "estaciones-group-" + ID_ESTACION);
+            props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+                consumer.subscribe(Collections.singletonList("ordenes-riego"));
+                while (true) {
+                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
+                    for (ConsumerRecord<String, String> record : records) {
+                        if (hayFuga) {
+                            System.out.println("\n[KAFKA] Orden ignorada. Fuga detectada en hardware.");
+                            imprimirMenu();
+                            continue;
+                        }
+                        
+                        String orden = record.value();
+                        System.out.println("\n[KAFKA] Orden remota de central: " + orden);
+                        
+                        if (orden.equalsIgnoreCase("STOP")) {
+                            if (regando) detenerRiego(brokerUri);
+                        } else {
+                            try {
+                                duracionObjetivo = Integer.parseInt(orden);
+                                if (!regando) iniciarRiego();
+                            } catch (NumberFormatException e) {
+                                System.out.println("[KAFKA] Protocolo desconocido.");
+                            }
+                        }
+                        imprimirMenu();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("\n[KAFKA] Antena caÃ­da: " + e.getMessage());
+            }
+        });
+        kafkaThread.start();
+
+        // 4. EL PUENTE TCP (Marcos)
+        try (Socket socket = new Socket(monitorIp, monitorPort);
+             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+
+            System.out.println("[WS_ENGINE] Conectado al monitor " + monitorIp + ":" + monitorPort);
+
+            String peticionMonitor;
+            while ((peticionMonitor = in.readLine()) != null) {
+                if (hayFuga) {
+                    out.println("KO"); 
+                } else if (regando) {
+                    out.println("REGANDO#" + LITROS_MINUTO);
+                } else {
+                    out.println("OK");
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("\n[WS_ENGINE] Monitor desconectado: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    private static void iniciarRiego() {
+        regando = true;
+        segundosTranscurridos = 0;
+        System.out.println("[WS_ENGINE] VÃ¡lvula ABIERTA.");
+    }
+
+    private static void detenerRiego(String brokerUri) {
+        regando = false;
+        System.out.println("[WS_ENGINE] VÃ¡lvula CERRADA.");
+        notificarFinRiego(brokerUri, ID_ESTACION, segundosTranscurridos, LITROS_MINUTO);
+    }
+
+    private static void imprimirMenu() {
+        System.out.println("\n=== PANEL WS_ENGINE ===");
+        System.out.println("[R] Abrir vÃ¡lvula (Manual)");
+        System.out.println("[P] Parar riego (Manual)");
+        System.out.println("[F] Provocar/Arreglar Fuga");
+        System.out.print("> ");
+    }
+
+    private static void notificarFinRiego(String brokerUri, String idEstacion, int duracionSegundos, double litrosPorMinuto) {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", brokerUri);
+        props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+
+        double volumenTotal = (duracionSegundos / 60.0) * litrosPorMinuto;
+        String resumen = idEstacion + "#" + duracionSegundos + "#" + String.format("%.2f", volumenTotal).replace(',', '.');
+
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+            producer.send(new ProducerRecord<>("resumenes_riego", idEstacion, resumen));
+            System.out.println("[KAFKA] Resumen disparado: " + resumen);
+        } catch (Exception e) {
+            System.err.println("[KAFKA] Cola inaccesible: " + e.getMessage());
         }
     }
 }
