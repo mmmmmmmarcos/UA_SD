@@ -27,22 +27,18 @@ public class Cliente {
 	* Escribe dato en el socket cliente. Devuelve numero de bytes escritos,
 	* o -1 si hay error.
 	*/
-	public void escribeSocket (Socket p_sk, String p_Datos)
-	{
-		try
-		{
-			OutputStream aux = p_sk.getOutputStream();
-			DataOutputStream flujo= new DataOutputStream( aux );
-			flujo.writeUTF(p_Datos);      
-		}
-		catch (Exception e)
-		{
-			System.out.println("Error: " + e.toString());
-		}
-		return;
-	}
-	
-	
+public void escribeSocket (Socket p_sk, String p_Datos)
+{
+    try
+    {
+        PrintWriter flujo = new PrintWriter(p_sk.getOutputStream(), true);
+        flujo.println(p_Datos);
+    }
+    catch (Exception e)
+    {
+        System.out.println("Error: " + e.toString());
+    }
+}
 	
 	public int pedirNumeros(String p_operacion, int p_resultado, String p_Cadena, Socket p_Socket_Con_Servidor)
 	{
