@@ -2,18 +2,23 @@ import java.io.*;
 import java.net.*;
 import java.util.Scanner;
 import java.util.Properties;
+import java.util.Collections;
+import java.time.Duration;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 public class WM_WS_E {
-    // Variables volátiles. La memoria RAM se comparte entre hilos sin bloqueos.
+    // Memoria RAM compartida. Volatile fuerza la lectura directa.
     private static volatile boolean hayFuga = false;
     private static volatile boolean regando = false;
     private static volatile int segundosTranscurridos = 0;
     private static volatile int duracionObjetivo = 0;
     
-    private static final double LITROS_MINUTO = 45.5; // Caudal fijo.
-    private static final String ID_ESTACION = "WS-01"; // TBD: Pasar por argumentos luego.
+    private static final double LITROS_MINUTO = 45.5; 
+    private static final String ID_ESTACION = "WS-01"; 
 
     public static void main(String[] args) {
         if (args.length < 2) {
@@ -26,7 +31,7 @@ public class WM_WS_E {
         String monitorIp = monitorParams[0];
         int monitorPort = Integer.parseInt(monitorParams[1]);
 
-        // EL CRONÓMETRO: Hilo fantasma que vigila el tiempo de riego
+        // 1. EL CRONÃ“METRO (Marcos)
         Thread timerThread = new Thread(() -> {
             while (true) {
                 try {
@@ -46,7 +51,7 @@ public class WM_WS_E {
         });
         timerThread.start();
 
-        // EL MENÚ TÁCTIL: Captura órdenes físicas del operario in situ
+        // 2. EL MENÃš TÃCTIL (Marcos)
         Thread inputThread = new Thread(() -> {
             Scanner scanner = new Scanner(System.in);
             imprimirMenu();
@@ -57,23 +62,23 @@ public class WM_WS_E {
                     hayFuga = !hayFuga;
                     System.out.println("[WS_ENGINE] Fuga " + (hayFuga ? "ACTIVADA" : "REPARADA"));
                 } else if (input.equals("R")) {
-                    if (!regando) {
+                    if (!regando && !hayFuga) {
                         System.out.print("Segundos de riego: ");
                         try {
                             duracionObjetivo = Integer.parseInt(scanner.nextLine());
                             iniciarRiego();
                         } catch (Exception e) {
-                            System.out.println("Formato inválido.");
+                            System.out.println("Formato invÃ¡lido.");
                         }
                     } else {
-                        System.out.println("El agua ya está corriendo.");
+                        System.out.println(hayFuga ? "Hay fuga. Imposible regar." : "El agua ya corre.");
                     }
                 } else if (input.equals("P")) {
                     if (regando) {
                         detenerRiego(brokerUri);
                         System.out.println("[WS_ENGINE] Riego abortado manualmente.");
                     } else {
-                        System.out.println("Válvula ya cerrada.");
+                        System.out.println("VÃ¡lvula ya cerrada.");
                     }
                 }
                 imprimirMenu();
@@ -81,7 +86,48 @@ public class WM_WS_E {
         });
         inputThread.start();
 
-        // LA RED: Conexión TCP pura con tu monitor WM_WS_M
+        // 3. ANTENA KAFKA (Ãlvaro)
+        Thread kafkaThread = new Thread(() -> {
+            Properties props = new Properties();
+            props.put("bootstrap.servers", brokerUri);
+            props.put("group.id", "estaciones-group-" + ID_ESTACION);
+            props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+                consumer.subscribe(Collections.singletonList("ordenes-riego"));
+                while (true) {
+                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
+                    for (ConsumerRecord<String, String> record : records) {
+                        if (hayFuga) {
+                            System.out.println("\n[KAFKA] Orden ignorada. Fuga detectada en hardware.");
+                            imprimirMenu();
+                            continue;
+                        }
+                        
+                        String orden = record.value();
+                        System.out.println("\n[KAFKA] Orden remota de central: " + orden);
+                        
+                        if (orden.equalsIgnoreCase("STOP")) {
+                            if (regando) detenerRiego(brokerUri);
+                        } else {
+                            try {
+                                duracionObjetivo = Integer.parseInt(orden);
+                                if (!regando) iniciarRiego();
+                            } catch (NumberFormatException e) {
+                                System.out.println("[KAFKA] Protocolo desconocido.");
+                            }
+                        }
+                        imprimirMenu();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("\n[KAFKA] Antena caÃ­da: " + e.getMessage());
+            }
+        });
+        kafkaThread.start();
+
+        // 4. EL PUENTE TCP (Marcos)
         try (Socket socket = new Socket(monitorIp, monitorPort);
              BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
              PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
@@ -90,7 +136,6 @@ public class WM_WS_E {
 
             String peticionMonitor;
             while ((peticionMonitor = in.readLine()) != null) {
-                // Tu monitor pregunta. Tú escupes el estado actual de la máquina.
                 if (hayFuga) {
                     out.println("KO"); 
                 } else if (regando) {
@@ -108,18 +153,18 @@ public class WM_WS_E {
     private static void iniciarRiego() {
         regando = true;
         segundosTranscurridos = 0;
-        System.out.println("[WS_ENGINE] Válvula ABIERTA.");
+        System.out.println("[WS_ENGINE] VÃ¡lvula ABIERTA.");
     }
 
     private static void detenerRiego(String brokerUri) {
         regando = false;
-        System.out.println("[WS_ENGINE] Válvula CERRADA.");
+        System.out.println("[WS_ENGINE] VÃ¡lvula CERRADA.");
         notificarFinRiego(brokerUri, ID_ESTACION, segundosTranscurridos, LITROS_MINUTO);
     }
 
     private static void imprimirMenu() {
         System.out.println("\n=== PANEL WS_ENGINE ===");
-        System.out.println("[R] Abrir válvula (Manual)");
+        System.out.println("[R] Abrir vÃ¡lvula (Manual)");
         System.out.println("[P] Parar riego (Manual)");
         System.out.println("[F] Provocar/Arreglar Fuga");
         System.out.print("> ");
