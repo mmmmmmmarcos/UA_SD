@@ -1,123 +1,45 @@
-import java.lang.Exception;
 import java.net.Socket;
 import java.io.*;
 
 public class HiloServidor extends Thread {
+    private Socket skCliente;
 
-	private Socket skCliente;
-	
-	public HiloServidor(Socket p_cliente)
-	{
-		this.skCliente = p_cliente;
-	}
-	
-	/*
-	* Lee datos del socket. Supone que se le pasa un buffer con hueco 
-	*	suficiente para los datos. Devuelve el numero de bytes leidos o
-	* 0 si se cierra fichero o -1 si hay error.
-	*/
-	public String leeSocket (Socket p_sk, String p_Datos)
-	{
-		try
-		{
-			InputStream aux = p_sk.getInputStream();
-			DataInputStream flujo = new DataInputStream( aux );
-			p_Datos = new String();
-			p_Datos = flujo.readUTF();
-		}
-		catch (Exception e)
-		{
-			System.out.println("Error: " + e.toString());
-		}
-      return p_Datos;
-	}
+    public HiloServidor(Socket p_cliente) {
+        this.skCliente = p_cliente;
+    }
 
-	/*
-	* Escribe dato en el socket cliente. Devuelve numero de bytes escritos,
-	* o -1 si hay error.
-	*/
-	public void escribeSocket (Socket p_sk, String p_Datos)
-	{
-		try
-		{
-			OutputStream aux = p_sk.getOutputStream();
-			DataOutputStream flujo= new DataOutputStream( aux );
-			flujo.writeUTF(p_Datos);      
-		}
-		catch (Exception e)
-		{
-			System.out.println("Error: " + e.toString());
-		}
-		return;
-	}
-	
-	public int sumar(int p_a, int p_b)
-	{
-		return p_a+p_b;
-	}
-
-	public int multiplicar(int p_a, int p_b)
-	{
-		return p_a*p_b;
-	}
-
-	public int realizarOperacion(String p_Cadena)
-	{
-		String[] operacion = p_Cadena.split(",");
-		int res=0;
-		
-		System.out.println("SRV: La operacion es: " + operacion[0]);
-		if(operacion.length != 1)
-		{
-			System.out.println("SRV: El operando 1 es " + operacion[1] + " y el operando 2 es " + operacion[2]);
-			if(operacion[0].compareTo("suma")==0)
-			{
-				res = sumar(Integer.parseInt(operacion[1]),Integer.parseInt(operacion[2]));
-			}
-			else
-			{
-				if(operacion[0].compareTo("mult")==0)
-				{
-					res = multiplicar(Integer.parseInt(operacion[1]),Integer.parseInt(operacion[2]));	
-				}	
-				else
-				{
-					
-					res = -1;
-				}
-			}
-			System.out.println("SRV: El resultado es: " + res);
-		}else
-		{
-			res = -1;
-		}	
-		return (res);
-	}
-	
-	
-	
+    @Override
     public void run() {
-		int resultado=0;
-		String Cadena="";
-		
-        try {
-			while (resultado != -1)
-			{
-				Cadena = this.leeSocket (skCliente, Cadena);
-				/*
-				* Se escribe en pantalla la informacion que se ha recibido del
-				* cliente
-				*/
-				resultado = this.realizarOperacion(Cadena);
-				Cadena = "" + resultado;
-				this.escribeSocket (skCliente, Cadena);						
-			}
-			skCliente.close();
-			//System.exit(0); No se debe poner esta sentencia, porque en ese caso el primer cliente que cierra rompe el socket 
-			//				  y desconecta a todos				
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(skCliente.getInputStream()));
+             PrintWriter out = new PrintWriter(skCliente.getOutputStream(), true)) {
+
+            String trama;
+            while ((trama = in.readLine()) != null) {
+                // Limpiar caracteres de control STX (0x02) y ETX (0x03) si vienen en la trama
+                String limpia = trama;
+                int stx = limpia.indexOf((char) 2);
+                int etx = limpia.indexOf((char) 3);
+                if (stx != -1 && etx != -1 && etx > stx) {
+                    limpia = limpia.substring(stx + 1, etx);
+                }
+
+                // Actualizar estado según lo que reporte el monitor
+                String idEstacion = "WS-01";
+                String estado = "AVAILABLE";
+                if (limpia.contains("KO")) {
+                    estado = "FAULT";
+                } else if (limpia.contains("REGANDO")) {
+                    estado = "BUSY";
+                }
+
+                ServidorConcurrente.estadoEstaciones.put(idEstacion, estado);
+                System.out.println("[WM_CENTRAL] Telemetría recibida: " + limpia + " -> Estado [" + idEstacion + "]: " + estado);
+
+                // Responder ACK al monitor por si espera confirmación
+                out.println("ACK");
+            }
+        } catch (Exception e) {
+            System.out.println("[WM_CENTRAL] Monitor desconectado: " + e.getMessage());
         }
-        catch (Exception e) {
-          System.out.println("Error: " + e.toString());
-        }
-      }
+    }
 }
