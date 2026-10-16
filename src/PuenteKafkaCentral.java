@@ -42,8 +42,8 @@ public class PuenteKafkaCentral implements Runnable {
                       // buscarla en tu SQLite y ver si está en estado "AVAILABLE" (VERDE).
                      
                     
-                    boolean estacionDisponible = true; //  Marcos cambia esto por tu consulta SQLite
-
+                    boolean estacionDisponible = "AVAILABLE".equals(ServidorConcurrente.estadoEstaciones.getOrDefault("WS-01", "AVAILABLE"));
+                    
                     if (estacionDisponible) {
                         System.out.println("[CENTRAL-KAFKA] Estación libre. Enviando autorización de riego...");
                         
