@@ -1,5 +1,6 @@
-FROM eclipse-temurin:21-jdk-alpine
+FROM eclipse-temurin:17-jdk
 WORKDIR /app
-COPY src/ /app/src/
-RUN javac src/*.java
-CMD java -cp src ServidorConcurrente ${PORT:-3000}
+COPY lib/ ./lib/
+COPY src/ ./src/
+COPY peticiones.txt ./peticiones.txt
+RUN javac -encoding ISO-8859-1 -cp ".:lib/*" src/*.java

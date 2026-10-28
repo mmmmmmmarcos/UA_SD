@@ -31,26 +31,34 @@ public class PuenteKafkaCentral implements Runnable {
             System.out.println("[CENTRAL-KAFKA] Puente iniciado. Escuchando peticiones en: " + brokerIp);
 
             while (true) {
-                // Leer eventos cada segundo
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
-                
-                for (ConsumerRecord<String, String> record : records) {
-                    System.out.println("[CENTRAL-KAFKA] Petición recibida del Operario: " + record.value());
 
-                    
-                     // Marcos, aquí debes parsear el record.value() para sacar la ID de la estación,
-                      // buscarla en tu SQLite y ver si está en estado "AVAILABLE" (VERDE).
-                     
-                    
-                    boolean estacionDisponible = "AVAILABLE".equals(ServidorConcurrente.estadoEstaciones.getOrDefault("WS-01", "AVAILABLE"));
-                    
-                    if (estacionDisponible) {
-                        System.out.println("[CENTRAL-KAFKA] Estación libre. Enviando autorización de riego...");
-                        
-                        producer.send(new ProducerRecord<>("ordenes-riego", record.value()));
+                for (ConsumerRecord<String, String> record : records) {
+                    String valor = record.value().trim();
+                    System.out.println("[CENTRAL-KAFKA] Petición recibida del Operario: " + valor);
+
+                    // Soporta formato "WS-01#5" o directamente "5" (asume WS-01)
+                    String idEstacion = "WS-01";
+                    String segundosOrden = "5";
+                    if (valor.contains("#")) {
+                        String[] partes = valor.split("#");
+                        idEstacion = partes[0].trim();
+                        segundosOrden = partes[1].trim();
+                    } else if (valor.startsWith("WS-")) {
+                        idEstacion = valor;
+                        segundosOrden = "5";
                     } else {
-                        System.out.println("[CENTRAL-KAFKA] Riego denegado: Estación ocupada, con fuga o fuera de servicio.");
-                        
+                        segundosOrden = valor;
+                    }
+
+                    String estadoBD = GestorBD.obtenerEstadoEstacion(idEstacion);
+                    boolean estacionDisponible = "AVAILABLE".equalsIgnoreCase(estadoBD);
+
+                    if (estacionDisponible) {
+                        System.out.println("[CENTRAL-KAFKA] SQLite confirma " + idEstacion + " AVAILABLE. Enviando orden (" + segundosOrden + "s)...");
+                        producer.send(new ProducerRecord<>("ordenes-riego", idEstacion, segundosOrden));
+                    } else {
+                        System.out.println("[CENTRAL-KAFKA] Riego denegado para " + idEstacion + ". Estado en SQLite: " + estadoBD);
                     }
                 }
             }

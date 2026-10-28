@@ -15,7 +15,6 @@ public class HiloServidor extends Thread {
 
             String trama;
             while ((trama = in.readLine()) != null) {
-                // Limpiar caracteres de control STX (0x02) y ETX (0x03) si vienen en la trama
                 String limpia = trama;
                 int stx = limpia.indexOf((char) 2);
                 int etx = limpia.indexOf((char) 3);
@@ -23,7 +22,6 @@ public class HiloServidor extends Thread {
                     limpia = limpia.substring(stx + 1, etx);
                 }
 
-                // Actualizar estado según lo que reporte el monitor
                 String idEstacion = "WS-01";
                 String estado = "AVAILABLE";
                 if (limpia.contains("KO")) {
@@ -32,10 +30,9 @@ public class HiloServidor extends Thread {
                     estado = "BUSY";
                 }
 
-                ServidorConcurrente.estadoEstaciones.put(idEstacion, estado);
-                System.out.println("[WM_CENTRAL] Telemetría recibida: " + limpia + " -> Estado [" + idEstacion + "]: " + estado);
+                GestorBD.actualizarEstadoEstacion(idEstacion, estado);
+                System.out.println("[WM_CENTRAL] Telemetría: " + limpia + " -> SQLite [" + idEstacion + " = " + estado + "]");
 
-                // Responder ACK al monitor por si espera confirmación
                 out.println("ACK");
             }
         } catch (Exception e) {

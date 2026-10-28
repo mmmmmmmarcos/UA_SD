@@ -12,8 +12,43 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  central:
+    build: .
+    container_name: wm_central
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8080"
+    command: java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp "src:lib/*" ServidorConcurrente 8080 kafka:9092
+
+  monitor:
+    build: .
+    container_name: wm_monitor
+    depends_on:
+      - central
+    ports:
+      - "5000:5000"
+    command: sh -c "sleep 5 && java -cp src WM_WS_M central:8080 5000"
+
+  engine:
+    build: .
+    container_name: wm_engine
+    depends_on:
+      - monitor
+      - kafka
+    stdin_open: true
+    tty: true
+    command: sh -c "sleep 8 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_WS_E kafka:9092 monitor:5000"
+
+  operario:
+    build: .
+    container_name: wm_fo
+    depends_on:
+      - central
+    command: sh -c "sleep 12 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_FO kafka:9092 peticiones.txt"
