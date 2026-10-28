@@ -1,13 +1,10 @@
 import java.net.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.Properties;
 import java.util.Collections;
 import java.time.Duration;
 import org.apache.kafka.clients.consumer.*;
 
 public class ServidorConcurrente {
-    // Mapa en memoria que actúa como tabla de estados de las estaciones
-    public static ConcurrentHashMap<String, String> estadoEstaciones = new ConcurrentHashMap<>();
 
     public static void main(String[] args) {
         if (args.length < 1) {
@@ -18,11 +15,14 @@ public class ServidorConcurrente {
         int puerto = Integer.parseInt(args[0]);
         String broker = (args.length >= 2) ? args[1] : "localhost:9092";
 
-        // 1. Arrancar el puente Kafka de Álvaro (peticiones-riego -> ordenes-riego)
+        // 1. Inicializar SQLite
+        GestorBD.inicializarBD();
+
+        // 2. Arrancar el puente Kafka (peticiones-riego -> ordenes-riego)
         Thread puente = new Thread(new PuenteKafkaCentral(broker));
         puente.start();
 
-        // 2. Arrancar consumidor para recibir los resúmenes finales de WM_WS_E
+        // 3. Consumidor para guardar resúmenes de riego en SQLite
         new Thread(() -> {
             Properties props = new Properties();
             props.put("bootstrap.servers", broker);
@@ -35,7 +35,7 @@ public class ServidorConcurrente {
                 while (true) {
                     ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
                     for (ConsumerRecord<String, String> record : records) {
-                        System.out.println("\n[CENTRAL-DB] Resumen de riego registrado: " + record.value());
+                        GestorBD.registrarResumen(record.value());
                     }
                 }
             } catch (Exception e) {
@@ -43,7 +43,7 @@ public class ServidorConcurrente {
             }
         }).start();
 
-        // 3. Servidor de Sockets para los Monitores (WM_WS_M)
+        // 4. Servidor de Sockets para los Monitores (WM_WS_M)
         try (ServerSocket skServidor = new ServerSocket(puerto)) {
             System.out.println("[WM_CENTRAL] Escuchando monitores en el puerto " + puerto + "...");
             for (;;) {
