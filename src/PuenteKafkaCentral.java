@@ -8,19 +8,19 @@ public class PuenteKafkaCentral implements Runnable {
     private String brokerIp;
 
     public PuenteKafkaCentral(String brokerIp) {
-        this.brokerIp = brokerIp;
+        this.brokerIp = "52.90.18.232:9092";
     }
 
     @Override
     public void run() {
         Properties consProps = new Properties();
-        consProps.put("bootstrap.servers", brokerIp);
+        consProps.put("bootstrap.servers", this.brokerIp);
         consProps.put("group.id", "central-group");
         consProps.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
         consProps.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
 
         Properties prodProps = new Properties();
-        prodProps.put("bootstrap.servers", brokerIp);
+        prodProps.put("bootstrap.servers", this.brokerIp);
         prodProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         prodProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 
@@ -28,7 +28,7 @@ public class PuenteKafkaCentral implements Runnable {
              KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
 
             consumer.subscribe(Collections.singletonList("peticiones-riego"));
-            System.out.println("[CENTRAL-KAFKA] Puente iniciado. Escuchando peticiones en: " + brokerIp);
+            System.out.println("[CENTRAL-KAFKA] Puente iniciado. Escuchando peticiones en: " + this.brokerIp);
 
             while (true) {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
@@ -37,7 +37,6 @@ public class PuenteKafkaCentral implements Runnable {
                     String valor = record.value().trim();
                     System.out.println("[CENTRAL-KAFKA] Petición recibida del Operario: " + valor);
 
-                    // Soporta formato "WS-01#5" o directamente "5" (asume WS-01)
                     String idEstacion = "WS-01";
                     String segundosOrden = "5";
                     if (valor.contains("#")) {
