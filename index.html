@@ -267,16 +267,16 @@ WS-01#5</textarea>
 
                                     if (accion === 'STOP') {
                                         clearInterval(intervaloTimer); // Frenamos el cronómetro
-                                        log(`🛑 [KAFKA] La estación ${estacion} ha DETENIDO el riego.`);
+                                        log(`[KAFKA] La estación ${estacion} ha DETENIDO el riego.`);
                                         actualizarUIEstado(false);
                                     } else if (accion === 'FUGA') {
                                         clearInterval(intervaloTimer);
                                         fugaActiva = !fugaActiva;
-                                        log(`⚠️ [KAFKA] Fuga en ${estacion} ${fugaActiva ? 'PROVOCADA' : 'REPARADA'}.`);
+                                        log(`[KAFKA] Fuga en ${estacion} ${fugaActiva ? 'PROVOCADA' : 'REPARADA'}.`);
                                         actualizarUIEstado(false, fugaActiva ? "ALERTA FUGA" : "Apagado (Fuga Arreglada)");
                                     } else {
                                         const segundos = parseInt(accion);
-                                        log(`💧 [KAFKA] RIEGO INICIADO en ${estacion} por ${segundos}s.`);
+                                        log(`[KAFKA] RIEGO INICIADO en ${estacion} por ${segundos}s.`);
                                         actualizarUIEstado(true);
 
                                         // LA MAGIA: LA CUENTA ATRÁS VISUAL Y EL STOP AUTOMÁTICO
@@ -293,7 +293,7 @@ WS-01#5</textarea>
                                             } else {
                                                 clearInterval(intervaloTimer);
                                                 if (riegoActivo) {
-                                                    log(`⏳ [TIMER] Tiempo finalizado. Ejecutando STOP automático.`);
+                                                    log(`[TIMER] Tiempo finalizado. Ejecutando STOP automático.`);
                                                     mandarFetchCentral(`${estacion}#STOP`);
                                                 }
                                             }
@@ -301,7 +301,7 @@ WS-01#5</textarea>
                                     }
                                 } else if (tipo === 'RESUMEN') {
                                     clearInterval(intervaloTimer);
-                                    log(`✅ [KAFKA-RESUMEN] Riego registrado: ${contenido}`);
+                                    log(`[KAFKA-RESUMEN] Riego registrado: ${contenido}`);
                                     actualizarUIEstado(false);
                                 }
                             }
