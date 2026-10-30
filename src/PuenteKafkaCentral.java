@@ -8,7 +8,7 @@ public class PuenteKafkaCentral implements Runnable {
     private String brokerIp;
 
     public PuenteKafkaCentral(String brokerIp) {
-        this.brokerIp = "52.90.18.232:9092";
+        this.brokerIp = "kafka:9092";
     }
 
     @Override
