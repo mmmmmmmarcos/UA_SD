@@ -52,7 +52,7 @@
             font-size: 0.9em;
         }
 
-        input[type="text"], select, textarea {
+        input[type="text"], select, textarea, input[type="number"] {
             width: 100%;
             padding: 6px;
             box-sizing: border-box;
@@ -68,6 +68,8 @@
             cursor: pointer;
             border-radius: 3px;
             font-size: 0.9em;
+            margin-right: 5px;
+            margin-bottom: 5px;
         }
 
             button:hover {
@@ -80,6 +82,14 @@
 
                 button.detener:hover {
                     background-color: #c0392b;
+                }
+
+            button.fuga {
+                background-color: #f39c12;
+            }
+
+                button.fuga:hover {
+                    background-color: #e67e22;
                 }
 
         #logConsole {
@@ -103,64 +113,45 @@
     </style>
 </head>
 <body>
-
     <h1>Water Management - Panel de Control</h1>
-
     <div class="contenedor">
-        <!-- Panel 1: Monitor de Estaci髇 -->
+
+        <!-- Panel 1: Control de Estaciones -->
         <div class="panel">
             <h2>1. Control de Estaciones (WS_M / WS_E)</h2>
             <div class="campo">
-                <label for="estacionSelect">Estaci髇 de Riego:</label>
+                <label for="estacionSelect">Estaci贸n de Riego:</label>
                 <select id="estacionSelect">
-                    <option value="WS-01">Estaci髇 1 (WS-01)</option>
-                    <option value="WS-02">Estaci髇 2 (WS-02)</option>
-                    <option value="WS-03">Estaci髇 3 (WS-03)</option>
+                    <option value="WS-01">Estaci贸n 1 (WS-01)</option>
+                    <option value="WS-02">Estaci贸n 2 (WS-02)</option>
+                    <option value="WS-03">Estaci贸n 3 (WS-03)</option>
                 </select>
             </div>
-
             <div class="estado-box">
                 Estado: <strong id="txtEstado">Apagado</strong> | Caudal actual: <strong id="txtCaudal">0</strong> L/min
             </div>
-
             <div class="campo">
-                <label for="inputCaudal">Ajustar Caudal (L/min):</label>
-                <input type="number" id="inputCaudal" value="15" min="0" max="100" style="width: 100%; padding: 5px;">
+                <label for="inputCaudal">Ajustar Segundos de Riego:</label>
+                <input type="number" id="inputSegundos" value="5" min="1" max="100">
             </div>
-
             <button onclick="cambiarEstado(true)">Iniciar Riego</button>
             <button class="detener" onclick="cambiarEstado(false)">Detener Riego</button>
+            <button class="fuga" onclick="toggleFuga()">Provocar/Arreglar Fuga</button>
         </div>
 
-        <!-- Panel 2: Generador de Tramas Red -->
+        <!-- Panel 2: Cola de Trabajo -->
         <div class="panel">
-            <h2>2. Generador de Tramas (Sockets / Protocolo)</h2>
-            <div class="campo">
-                <label for="inputComando">Comando Payload:</label>
-                <input type="text" id="inputComando" value="WS-01;START;FLOW=15">
-            </div>
-            <button onclick="generarTrama()">Generar Trama STX/ETX</button>
-
-            <div class="campo" style="margin-top: 10px;">
-                <label>Trama generada con LRC:</label>
-                <input type="text" id="resTrama" readonly style="background: #f0f0f0;">
-            </div>
-        </div>
-
-        <!-- Panel 3: Simulaci髇 de Operario FO -->
-        <div class="panel">
-            <h2>3. Cola de Trabajo (peticiones.txt)</h2>
+            <h2>2. Cola de Trabajo (Simulaci贸n peticiones.txt)</h2>
             <div class="campo">
                 <label for="txtPeticiones">Archivo de peticiones pendiente:</label>
-                <textarea id="txtPeticiones" rows="4">WS-01 START 20
-WS-02 START 15
-WS-01 STOP 0</textarea>
+                <textarea id="txtPeticiones" rows="6">WS-01#4
+WS-02#6
+WS-01#5</textarea>
             </div>
             <button onclick="procesarSiguientePeticion()">Procesar Siguiente Orden</button>
         </div>
     </div>
 
-    <!-- Log de Eventos -->
     <div style="margin-top: 20px;">
         <h2>Consola de Eventos (Logs del Sistema)</h2>
         <textarea id="logConsole" readonly></textarea>
@@ -169,6 +160,7 @@ WS-01 STOP 0</textarea>
 
     <script>
         let riegoActivo = false;
+        let fugaActiva = false;
 
         function log(msg) {
             const time = new Date().toLocaleTimeString();
@@ -177,57 +169,52 @@ WS-01 STOP 0</textarea>
             consoleBox.scrollTop = consoleBox.scrollHeight;
         }
 
+        function mandarFetchCentral(orden) {
+            fetch(`http://localhost:8082/regar?orden=${encodeURIComponent(orden)}`)
+                .then(response => log(`[HTTP] Orden inyectada a la Central: ${orden}`))
+                .catch(err => log(`[ERROR] HTTP: No se alcanz贸 la Central. ${err}`));
+        }
+
         function cambiarEstado(activo) {
             riegoActivo = activo;
             const est = document.getElementById('estacionSelect').value;
-            const caudal = activo ? document.getElementById('inputCaudal').value : 0;
+            const segs = activo ? document.getElementById('inputSegundos').value : 0;
 
             document.getElementById('txtEstado').innerText = activo ? "EN RIEGO" : "Apagado";
             document.getElementById('txtEstado').style.color = activo ? "green" : "red";
-            document.getElementById('txtCaudal').innerText = caudal;
+            document.getElementById('txtCaudal').innerText = activo ? "15" : "0";
 
-            log(`[SISTEMA] Estaci髇 ${est} -> Estado: ${activo ? 'ACTIVADO' : 'DESACTIVADO'} | Caudal: ${caudal} L/min`);
+            log(`[SISTEMA] Estaci贸n ${est} -> Acci贸n manual disparada.`);
+
+            if (activo) {
+                mandarFetchCentral(`${est}#${segs}`);
+            } else {
+                mandarFetchCentral(`${est}#STOP`);
+            }
         }
 
-        function generarTrama() {
-            const payload = document.getElementById('inputComando').value;
-            if (!payload) return;
+        function toggleFuga() {
+            fugaActiva = !fugaActiva;
+            const est = document.getElementById('estacionSelect').value;
+            log(`[SISTEMA] Estaci贸n ${est} -> Fuga: ${fugaActiva ? 'PROVOCADA' : 'ARREGLADA'}`);
 
-            // Calculo b醩ico de checksum XOR (LRC)
-            let lrc = 0;
-            for (let i = 0; i < payload.length; i++) {
-                lrc ^= payload.charCodeAt(i);
-            }
-            const lrcHex = lrc.toString(16).padStart(2, '0').toUpperCase();
-
-            // Formato de trama con STX (\x02) y ETX (\x03)
-            const trama = `<STX>${payload}<ETX>[0x${lrcHex}]`;
-            document.getElementById('resTrama').value = trama;
-
-            log(`[SOCKET] Trama enviada: ${trama}`);
+            // Env铆a un payload especial para la fuga
+            mandarFetchCentral(`${est}#FUGA`);
         }
 
         function procesarSiguientePeticion() {
             const area = document.getElementById('txtPeticiones');
             const lineas = area.value.split('\n').filter(l => l.trim() !== '');
-
-            if (lineas.length === 0) {
-                log('[WM_FO] No quedan peticiones pendientes en peticiones.txt');
-                return;
-            }
+            if (lineas.length === 0) { log('[WM_FO] No hay peticiones.'); return; }
 
             const siguiente = lineas.shift();
             area.value = lineas.join('\n');
-
-            log(`[WM_FO] Procesando orden desde peticiones.txt: "${siguiente}"`);
+            log(`[WM_FO] Extrayendo orden de la cola: "${siguiente}"`);
+            mandarFetchCentral(siguiente);
         }
 
-        function limpiarLog() {
-            document.getElementById('logConsole').value = '';
-        }
-
-        // Mensaje inicial de arranque
-        log("[INICIO] Panel de control Water Management iniciado correctamente.");
+        function limpiarLog() { document.getElementById('logConsole').value = ''; }
+        log("[INICIO] Panel de control iniciado. Listo para inyectar en Kafka.");
     </script>
 </body>
 </html>
