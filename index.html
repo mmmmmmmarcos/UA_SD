@@ -162,6 +162,8 @@ WS-01#5</textarea>
         let riegoActivo = false;
         let fugaActiva = false;
         let ultimoEventoId = -1;
+        let primeraCarga = true;
+        let temporizadorWeb = null;
 
         function log(msg) {
             const time = new Date().toLocaleTimeString();
@@ -193,10 +195,19 @@ WS-01#5</textarea>
 
         function cambiarEstado(activo) {
             const est = document.getElementById('estacionSelect').value;
-            const segs = activo ? document.getElementById('inputSegundos').value : 0;
+            const segs = document.getElementById('inputSegundos').value;
+
+            clearTimeout(temporizadorWeb); // Destruye temporizadores anteriores si haces doble clic
 
             if (activo) {
                 mandarFetchCentral(`${est}#${segs}`);
+
+                // Parche web: Disparamos el STOP automáticamente al consumir los segundos
+                temporizadorWeb = setTimeout(() => {
+                    if (riegoActivo) {
+                        mandarFetchCentral(`${est}#STOP`);
+                    }
+                }, segs * 1000);
             } else {
                 mandarFetchCentral(`${est}#STOP`);
             }
@@ -218,13 +229,20 @@ WS-01#5</textarea>
             mandarFetchCentral(siguiente);
         }
 
-        // SINCRONIZACIÓN DISTRIBUIDA: Pregunta cada 1.5s a la central qué eventos han llegado de AWS
         function sincronizarConKafka() {
             fetch('http://localhost:8082/eventos')
                 .then(res => res.text())
                 .then(texto => {
                     if (!texto.trim()) return;
                     const lineas = texto.trim().split('\n');
+
+                    // Ignoramos el volcado masivo del historial al refrescar la web
+                    if (primeraCarga) {
+                        const ultimaLinea = lineas[lineas.length - 1].split('|');
+                        ultimoEventoId = parseInt(ultimaLinea[0]);
+                        primeraCarga = false;
+                        return;
+                    }
 
                     lineas.forEach(linea => {
                         const partes = linea.split('|');
@@ -233,14 +251,12 @@ WS-01#5</textarea>
                             const tipo = partes[1];
                             const contenido = partes.slice(2).join('|');
 
-                            // Si es un evento nuevo que no hemos pintado aún
                             if (id > ultimoEventoId) {
                                 ultimoEventoId = id;
 
                                 if (tipo === 'ORDEN') {
                                     const [estacion, accion] = contenido.split('#');
 
-                                    // Actualizamos el desplegable
                                     if (estacion && ['WS-01', 'WS-02', 'WS-03'].includes(estacion)) {
                                         document.getElementById('estacionSelect').value = estacion;
                                     }
@@ -263,13 +279,9 @@ WS-01#5</textarea>
                             }
                         }
                     });
-                })
-                .catch(err => {
-                    // Silencioso para no inundar el log si la central aún está arrancando
-                });
+                }).catch(err => { });
         }
 
-        // Iniciar polling cada 1.5 segundos
         setInterval(sincronizarConKafka, 1500);
 
         function limpiarLog() { document.getElementById('logConsole').value = ''; }
