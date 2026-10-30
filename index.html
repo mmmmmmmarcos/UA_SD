@@ -166,7 +166,7 @@ WS-01#5</textarea>
         let fugaActiva = false;
         let ultimoEventoId = -1;
         let primeraCarga = true;
-        let temporizadorWeb = null;
+        let intervaloTimer = null; // El cronómetro absoluto
 
         function log(msg) {
             const time = new Date().toLocaleTimeString();
@@ -188,9 +188,14 @@ WS-01#5</textarea>
                 txtEstado.style.color = "orange";
                 txtCaudal.innerText = "0";
             } else {
-                txtEstado.innerText = activo ? "EN RIEGO" : "Apagado";
-                txtEstado.style.color = activo ? "green" : "red";
-                txtCaudal.innerText = activo ? "15" : "0";
+                if (activo) {
+                    txtEstado.style.color = "green";
+                    txtCaudal.innerText = "15";
+                } else {
+                    txtEstado.innerText = "Apagado";
+                    txtEstado.style.color = "red";
+                    txtCaudal.innerText = "0";
+                }
             }
         }
 
@@ -206,16 +211,8 @@ WS-01#5</textarea>
             const est = document.getElementById('estacionSelect').value;
             const segs = document.getElementById('inputSegundos').value;
 
-            clearTimeout(temporizadorWeb);
-
             if (activo) {
                 mandarFetchCentral(`${est}#${segs}`);
-
-                temporizadorWeb = setTimeout(() => {
-                    if (riegoActivo) {
-                        mandarFetchCentral(`${est}#STOP`);
-                    }
-                }, segs * 1000);
             } else {
                 mandarFetchCentral(`${est}#STOP`);
             }
@@ -269,18 +266,42 @@ WS-01#5</textarea>
                                     }
 
                                     if (accion === 'STOP') {
-                                        log(`[KAFKA] La estación ${estacion} ha DETENIDO el riego remotamente.`);
+                                        clearInterval(intervaloTimer); // Frenamos el cronómetro
+                                        log(`🛑 [KAFKA] La estación ${estacion} ha DETENIDO el riego.`);
                                         actualizarUIEstado(false);
                                     } else if (accion === 'FUGA') {
+                                        clearInterval(intervaloTimer);
                                         fugaActiva = !fugaActiva;
-                                        log(`[KAFKA] Fuga en ${estacion} ${fugaActiva ? 'PROVOCADA' : 'REPARADA'}.`);
+                                        log(`⚠️ [KAFKA] Fuga en ${estacion} ${fugaActiva ? 'PROVOCADA' : 'REPARADA'}.`);
                                         actualizarUIEstado(false, fugaActiva ? "ALERTA FUGA" : "Apagado (Fuga Arreglada)");
                                     } else {
-                                        log(`[KAFKA] RIEGO INICIADO en ${estacion} durante ${accion} segundos.`);
+                                        const segundos = parseInt(accion);
+                                        log(`💧 [KAFKA] RIEGO INICIADO en ${estacion} por ${segundos}s.`);
                                         actualizarUIEstado(true);
+
+                                        // LA MAGIA: LA CUENTA ATRÁS VISUAL Y EL STOP AUTOMÁTICO
+                                        let s = segundos;
+                                        clearInterval(intervaloTimer);
+                                        document.getElementById('txtEstado').innerText = `EN RIEGO (${s}s restantes)`;
+
+                                        intervaloTimer = setInterval(() => {
+                                            s--;
+                                            if (s > 0) {
+                                                if (riegoActivo) {
+                                                    document.getElementById('txtEstado').innerText = `EN RIEGO (${s}s restantes)`;
+                                                }
+                                            } else {
+                                                clearInterval(intervaloTimer);
+                                                if (riegoActivo) {
+                                                    log(`⏳ [TIMER] Tiempo finalizado. Ejecutando STOP automático.`);
+                                                    mandarFetchCentral(`${estacion}#STOP`);
+                                                }
+                                            }
+                                        }, 1000);
                                     }
                                 } else if (tipo === 'RESUMEN') {
-                                    log(`[KAFKA-RESUMEN] Riego finalizado/registrado: ${contenido}`);
+                                    clearInterval(intervaloTimer);
+                                    log(`✅ [KAFKA-RESUMEN] Riego registrado: ${contenido}`);
                                     actualizarUIEstado(false);
                                 }
                             }
@@ -290,9 +311,8 @@ WS-01#5</textarea>
         }
 
         setInterval(sincronizarConKafka, 1500);
-
         function limpiarLog() { document.getElementById('logConsole').value = ''; }
-        log("[INICIO] Panel de control blindado. Esperando órdenes.");
+        log("[INICIO] Sistema listo. Temporizador sincronizado con red Kafka.");
     </script>
 </body>
 </html>
