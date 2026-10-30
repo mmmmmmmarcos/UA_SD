@@ -1,11 +1,15 @@
 import java.net.*;
+import java.io.OutputStream;
 import java.util.Properties;
 import java.util.Collections;
 import java.time.Duration;
 import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.clients.producer.*;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
 
 public class ServidorConcurrente {
-
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Uso: java ServidorConcurrente <puerto_escucha> [broker_kafka]");
@@ -13,16 +17,13 @@ public class ServidorConcurrente {
         }
 
         int puerto = Integer.parseInt(args[0]);
-        String broker = (args.length >= 2) ? args[1] : "localhost:9092";
+        String broker = (args.length >= 2) ? args[1] : "kafka:9092";
 
-        // 1. Inicializar SQLite
         GestorBD.inicializarBD();
 
-        // 2. Arrancar el puente Kafka (peticiones-riego -> ordenes-riego)
         Thread puente = new Thread(new PuenteKafkaCentral(broker));
         puente.start();
 
-        // 3. Consumidor para guardar resúmenes de riego en SQLite
         new Thread(() -> {
             Properties props = new Properties();
             props.put("bootstrap.servers", broker);
@@ -43,7 +44,49 @@ public class ServidorConcurrente {
             }
         }).start();
 
-        // 4. Servidor de Sockets para los Monitores (WM_WS_M)
+        new Thread(() -> {
+            try {
+                HttpServer server = HttpServer.create(new InetSocketAddress(8082), 0);
+                server.createContext("/regar", new HttpHandler() {
+                    @Override
+                    public void handle(HttpExchange exchange) {
+                        try {
+                            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                            String query = exchange.getRequestURI().getQuery();
+                            
+                            if (query != null && query.startsWith("orden=")) {
+                                String ordenRaw = query.split("=")[1];
+                                String orden = java.net.URLDecoder.decode(ordenRaw, "UTF-8");
+                                
+                                Properties prodProps = new Properties();
+                                prodProps.put("bootstrap.servers", broker);
+                                prodProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+                                prodProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+                                
+                                try (KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
+                                    producer.send(new ProducerRecord<>("peticiones-riego", orden));
+                                    System.out.println("[WM_CENTRAL-HTTP] Orden inyectada desde Web: " + orden);
+                                }
+                                
+                                String response = "Orden procesada en Kafka";
+                                exchange.sendResponseHeaders(200, response.length());
+                                OutputStream os = exchange.getResponseBody();
+                                os.write(response.getBytes());
+                                os.close();
+                            }
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    }
+                });
+                server.setExecutor(null);
+                server.start();
+                System.out.println("[WM_CENTRAL] Servidor HTTP escuchando frontend en puerto 8082...");
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+
         try (ServerSocket skServidor = new ServerSocket(puerto)) {
             System.out.println("[WM_CENTRAL] Escuchando monitores en el puerto " + puerto + "...");
             for (;;) {
