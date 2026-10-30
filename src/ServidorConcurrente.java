@@ -49,12 +49,17 @@ public class ServidorConcurrente {
                     ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
                     for (ConsumerRecord<String, String> record : records) {
                         if ("resumenes_riego".equals(record.topic())) {
-                            GestorBD.registrarResumen(record.value());
+                            System.out.println("[KAFKA-AWS] Recibido resumen en la red: " + record.value()); 
+        
+                             GestorBD.registrarResumen(record.value());
                             eventosGlobales.add("RESUMEN|" + record.value());
-                        } else if ("peticiones-riego".equals(record.topic())) {
-                            eventosGlobales.add("ORDEN|" + record.value());
-                        }
-                    }
+                            } else if ("peticiones-riego".equals(record.topic())) {
+                            // AÑADE ESTA LÍNEA para que se vea en todas las terminales
+                            System.out.println("[KAFKA-AWS] Recibida orden desde la red: " + record.value());
+        
+        eventosGlobales.add("ORDEN|" + record.value());
+    }
+}
                 }
             } catch (Exception e) {
                 System.err.println("[CENTRAL-DB] Error en consumidor de sincronización: " + e.getMessage());
