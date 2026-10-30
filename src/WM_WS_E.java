@@ -99,16 +99,17 @@ public class WM_WS_E {
                 while (true) {
                     ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
                     for (ConsumerRecord<String, String> record : records) {
-                        if (hayFuga) {
-                            System.out.println("\n[KAFKA] Orden ignorada. Fuga detectada en hardware.");
-                            imprimirMenu();
-                            continue;
-                        }
                         
                         String orden = record.value();
                         System.out.println("\n[KAFKA] Orden remota de central: " + orden);
                         
-                        if (orden.equalsIgnoreCase("STOP")) {
+                        if (orden.equalsIgnoreCase("FUGA")) {
+                            hayFuga = !hayFuga;
+                            System.out.println("\n[KAFKA] Orden de fuga remota recibida.");
+                            System.out.println("[WS_ENGINE] Fuga " + (hayFuga ? "ACTIVADA" : "REPARADA"));
+                        } else if (hayFuga) {
+                            System.out.println("[KAFKA] Orden ignorada. Fuga detectada en hardware.");
+                        } else if (orden.equalsIgnoreCase("STOP")) {
                             if (regando) detenerRiego(brokerUri);
                         } else {
                             try {
