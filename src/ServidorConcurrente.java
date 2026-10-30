@@ -50,16 +50,30 @@ public class ServidorConcurrente {
                     for (ConsumerRecord<String, String> record : records) {
                         if ("resumenes_riego".equals(record.topic())) {
                             System.out.println("[KAFKA-AWS] Recibido resumen en la red: " + record.value()); 
-        
-                             GestorBD.registrarResumen(record.value());
+                            GestorBD.registrarResumen(record.value());
                             eventosGlobales.add("RESUMEN|" + record.value());
-                            } else if ("peticiones-riego".equals(record.topic())) {
-                            // AÑADE ESTA LÍNEA para que se vea en todas las terminales
-                            System.out.println("[KAFKA-AWS] Recibida orden desde la red: " + record.value());
-        
-        eventosGlobales.add("ORDEN|" + record.value());
-    }
-}
+                        } else if ("peticiones-riego".equals(record.topic())) {
+                            String valor = record.value();
+                            String[] partes = valor.split("#");
+                            
+                            if (partes.length == 2) {
+                                String estacion = partes[0];
+                                String accion = partes[1];
+                                
+                                if (accion.equals("STOP")) {
+                                    System.out.println("[KAFKA-AWS] DETENIENDO riego remotamente en " + estacion);
+                                } else if (accion.equals("FUGA")) {
+                                    System.out.println("[KAFKA-AWS] ALTERANDO estado de fuga en " + estacion);
+                                } else {
+                                    System.out.println("[KAFKA-AWS] INICIANDO riego en " + estacion + " durante " + accion + " segundos");
+                                }
+                            } else {
+                                System.out.println("[KAFKA-AWS] Orden cruda recibida: " + valor);
+                            }
+                            
+                            eventosGlobales.add("ORDEN|" + valor);
+                        }
+                    }
                 }
             } catch (Exception e) {
                 System.err.println("[CENTRAL-DB] Error en consumidor de sincronización: " + e.getMessage());
