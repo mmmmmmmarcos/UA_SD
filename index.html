@@ -33,13 +33,13 @@
             min-width: 300px;
         }
 
-            .panel h2 {
-                font-size: 1.1em;
-                margin-top: 0;
-                color: #34495e;
-                border-bottom: 1px solid #eee;
-                padding-bottom: 5px;
-            }
+        .panel h2 {
+            font-size: 1.1em;
+            margin-top: 0;
+            color: #34495e;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
 
         .campo {
             margin-bottom: 12px;
@@ -72,29 +72,29 @@
             margin-bottom: 5px;
         }
 
-            button:hover {
-                background-color: #2980b9;
-            }
+        button:hover {
+            background-color: #2980b9;
+        }
 
-            button.detener {
-                background-color: #e74c3c;
-            }
+        button.detener {
+            background-color: #e74c3c;
+        }
 
-                button.detener:hover {
-                    background-color: #c0392b;
-                }
+        button.detener:hover {
+            background-color: #c0392b;
+        }
 
-            button.fuga {
-                background-color: #f39c12;
-            }
+        button.fuga {
+            background-color: #f39c12;
+        }
 
-                button.fuga:hover {
-                    background-color: #e67e22;
-                }
+        button.fuga:hover {
+            background-color: #e67e22;
+        }
 
         #logConsole {
             width: 100%;
-            height: 180px;
+            height: 220px;
             background-color: #1e1e1e;
             color: #00ff00;
             font-family: monospace;
@@ -113,7 +113,7 @@
     </style>
 </head>
 <body>
-    <h1>Water Management - Panel de Control</h1>
+    <h1>Water Management - Panel de Control Distribuido</h1>
     <div class="contenedor">
 
         <!-- Panel 1: Control de Estaciones -->
@@ -131,7 +131,7 @@
                 Estado: <strong id="txtEstado">Apagado</strong> | Caudal actual: <strong id="txtCaudal">0</strong> L/min
             </div>
             <div class="campo">
-                <label for="inputCaudal">Ajustar Segundos de Riego:</label>
+                <label for="inputSegundos">Ajustar Segundos de Riego:</label>
                 <input type="number" id="inputSegundos" value="5" min="1" max="100">
             </div>
             <button onclick="cambiarEstado(true)">Iniciar Riego</button>
@@ -153,7 +153,7 @@ WS-01#5</textarea>
     </div>
 
     <div style="margin-top: 20px;">
-        <h2>Consola de Eventos (Logs del Sistema)</h2>
+        <h2>Consola de Eventos Globales (Sincronizada con Kafka AWS)</h2>
         <textarea id="logConsole" readonly></textarea>
         <button onclick="limpiarLog()" style="margin-top: 5px; background: #7f8c8d;">Limpiar Consola</button>
     </div>
@@ -161,6 +161,7 @@ WS-01#5</textarea>
     <script>
         let riegoActivo = false;
         let fugaActiva = false;
+        let ultimoEventoId = -1;
 
         function log(msg) {
             const time = new Date().toLocaleTimeString();
@@ -169,22 +170,31 @@ WS-01#5</textarea>
             consoleBox.scrollTop = consoleBox.scrollHeight;
         }
 
+        function actualizarUIEstado(activo, textoEspecial = null) {
+            riegoActivo = activo;
+            const txtEstado = document.getElementById('txtEstado');
+            const txtCaudal = document.getElementById('txtCaudal');
+
+            if (textoEspecial) {
+                txtEstado.innerText = textoEspecial;
+                txtEstado.style.color = "orange";
+                txtCaudal.innerText = "0";
+            } else {
+                txtEstado.innerText = activo ? "EN RIEGO" : "Apagado";
+                txtEstado.style.color = activo ? "green" : "red";
+                txtCaudal.innerText = activo ? "15" : "0";
+            }
+        }
+
         function mandarFetchCentral(orden) {
             fetch(`http://localhost:8082/regar?orden=${encodeURIComponent(orden)}`)
-                .then(response => log(`[HTTP] Orden inyectada a la Central: ${orden}`))
-                .catch(err => log(`[ERROR] HTTP: No se alcanzó la Central. ${err}`));
+                .then(response => log(`[HTTP LOCAL] Enviada petición a Kafka: ${orden}`))
+                .catch(err => log(`[ERROR] HTTP: No se alcanzó la Central local. ${err}`));
         }
 
         function cambiarEstado(activo) {
-            riegoActivo = activo;
             const est = document.getElementById('estacionSelect').value;
             const segs = activo ? document.getElementById('inputSegundos').value : 0;
-
-            document.getElementById('txtEstado').innerText = activo ? "EN RIEGO" : "Apagado";
-            document.getElementById('txtEstado').style.color = activo ? "green" : "red";
-            document.getElementById('txtCaudal').innerText = activo ? "15" : "0";
-
-            log(`[SISTEMA] Estación ${est} -> Acción manual disparada.`);
 
             if (activo) {
                 mandarFetchCentral(`${est}#${segs}`);
@@ -194,11 +204,7 @@ WS-01#5</textarea>
         }
 
         function toggleFuga() {
-            fugaActiva = !fugaActiva;
             const est = document.getElementById('estacionSelect').value;
-            log(`[SISTEMA] Estación ${est} -> Fuga: ${fugaActiva ? 'PROVOCADA' : 'ARREGLADA'}`);
-
-            // Envía un payload especial para la fuga
             mandarFetchCentral(`${est}#FUGA`);
         }
 
@@ -213,8 +219,59 @@ WS-01#5</textarea>
             mandarFetchCentral(siguiente);
         }
 
+        // SINCRONIZACIÓN DISTRIBUIDA: Pregunta cada 1.5s a la central qué eventos han llegado de AWS
+        function sincronizarConKafka() {
+            fetch('http://localhost:8082/eventos')
+                .then(res => res.text())
+                .then(texto => {
+                    if (!texto.trim()) return;
+                    const lineas = texto.trim().split('\n');
+                    
+                    lineas.forEach(linea => {
+                        const partes = linea.split('|');
+                        if (partes.length >= 3) {
+                            const id = parseInt(partes[0]);
+                            const tipo = partes[1];
+                            const contenido = partes.slice(2).join('|');
+
+                            // Si es un evento nuevo que no hemos pintado aún
+                            if (id > ultimoEventoId) {
+                                ultimoEventoId = id;
+                                
+                                if (tipo === 'ORDEN') {
+                                    log(`🌐 [KAFKA-ORDEN] Detectada orden en la red: ${contenido}`);
+                                    const [estacion, accion] = contenido.split('#');
+                                    
+                                    // Actualizamos el desplegable y el estado visual en todos los PCs
+                                    if (estacion && ['WS-01', 'WS-02', 'WS-03'].includes(estacion)) {
+                                        document.getElementById('estacionSelect').value = estacion;
+                                    }
+                                    if (accion === 'STOP') {
+                                        actualizarUIEstado(false);
+                                    } else if (accion === 'FUGA') {
+                                        fugaActiva = !fugaActiva;
+                                        actualizarUIEstado(false, fugaActiva ? "ALERTA FUGA" : "Apagado (Fuga Arreglada)");
+                                    } else {
+                                        actualizarUIEstado(true);
+                                    }
+                                } else if (tipo === 'RESUMEN') {
+                                    log(`✅ [KAFKA-RESUMEN] Riego finalizado/registrado: ${contenido}`);
+                                    actualizarUIEstado(false);
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(err => {
+                    // Silencioso para no inundar el log si la central aún está arrancando
+                });
+        }
+
+        // Iniciar polling cada 1.5 segundos
+        setInterval(sincronizarConKafka, 1500);
+
         function limpiarLog() { document.getElementById('logConsole').value = ''; }
-        log("[INICIO] Panel de control iniciado. Listo para inyectar en Kafka.");
+        log("[INICIO] Panel de control iniciado. Sincronización en tiempo real con AWS activada.");
     </script>
 </body>
 </html>
