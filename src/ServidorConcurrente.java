@@ -1,7 +1,12 @@
 import java.net.*;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 import java.util.Collections;
+import java.util.Arrays;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.UUID;
 import java.time.Duration;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.clients.producer.*;
@@ -10,6 +15,9 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 public class ServidorConcurrente {
+    // Historial compartido en memoria para sincronizar el frontend local
+    private static final List<String> eventosGlobales = Collections.synchronizedList(new ArrayList<>());
+
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Uso: java ServidorConcurrente <puerto_escucha> [broker_kafka]");
@@ -24,29 +32,60 @@ public class ServidorConcurrente {
         Thread puente = new Thread(new PuenteKafkaCentral(broker));
         puente.start();
 
+        // Hilo Consumidor en modo Broadcast (group.id único por cada ordenador)
         new Thread(() -> {
             Properties props = new Properties();
             props.put("bootstrap.servers", broker);
-            props.put("group.id", "central-resumenes-group");
+            // UUID único garantiza que TODOS los ordenadores reciban TODOS los mensajes de Kafka
+            props.put("group.id", "central-sync-group-" + UUID.randomUUID().toString());
+            props.put("auto.offset.reset", "latest");
             props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
             props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
 
             try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-                consumer.subscribe(Collections.singletonList("resumenes_riego"));
+                // Escuchamos tanto los resúmenes finales como las órdenes en tiempo real
+                consumer.subscribe(Arrays.asList("resumenes_riego", "peticiones-riego"));
                 while (true) {
-                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
+                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
                     for (ConsumerRecord<String, String> record : records) {
-                        GestorBD.registrarResumen(record.value());
+                        if ("resumenes_riego".equals(record.topic())) {
+                            System.out.println("[KAFKA-AWS] Recibido resumen en la red: " + record.value()); 
+                            GestorBD.registrarResumen(record.value());
+                            eventosGlobales.add("RESUMEN|" + record.value());
+                        } else if ("peticiones-riego".equals(record.topic())) {
+                            String valor = record.value();
+                            String[] partes = valor.split("#");
+                            
+                            if (partes.length == 2) {
+                                String estacion = partes[0];
+                                String accion = partes[1];
+                                
+                                if (accion.equals("STOP")) {
+                                    System.out.println("[KAFKA-AWS] DETENIENDO riego remotamente en " + estacion);
+                                } else if (accion.equals("FUGA")) {
+                                    System.out.println("[KAFKA-AWS] ALTERANDO estado de fuga en " + estacion);
+                                } else {
+                                    System.out.println("[KAFKA-AWS] INICIANDO riego en " + estacion + " durante " + accion + " segundos");
+                                }
+                            } else {
+                                System.out.println("[KAFKA-AWS] Orden cruda recibida: " + valor);
+                            }
+                            
+                            eventosGlobales.add("ORDEN|" + valor);
+                        }
                     }
                 }
             } catch (Exception e) {
-                System.err.println("[CENTRAL-DB] Error en consumidor de resúmenes: " + e.getMessage());
+                System.err.println("[CENTRAL-DB] Error en consumidor de sincronización: " + e.getMessage());
             }
         }).start();
 
+        // Servidor HTTP para comunicarse con el index.html (Puerto 8082)
         new Thread(() -> {
             try {
                 HttpServer server = HttpServer.create(new InetSocketAddress(8082), 0);
+                
+                // Endpoint 1: Inyectar órdenes en Kafka
                 server.createContext("/regar", new HttpHandler() {
                     @Override
                     public void handle(HttpExchange exchange) {
@@ -68,10 +107,10 @@ public class ServidorConcurrente {
                                     System.out.println("[WM_CENTRAL-HTTP] Orden inyectada desde Web: " + orden);
                                 }
                                 
-                                String response = "Orden procesada en Kafka";
-                                exchange.sendResponseHeaders(200, response.length());
+                                byte[] response = "Orden procesada en Kafka".getBytes(StandardCharsets.UTF_8);
+                                exchange.sendResponseHeaders(200, response.length);
                                 OutputStream os = exchange.getResponseBody();
-                                os.write(response.getBytes());
+                                os.write(response);
                                 os.close();
                             }
                         } catch (Exception e) {
@@ -79,6 +118,33 @@ public class ServidorConcurrente {
                         }
                     }
                 });
+
+                // Endpoint 2: Devolver los eventos de Kafka al frontend para sincronizar pantallas
+                server.createContext("/eventos", new HttpHandler() {
+                    @Override
+                    public void handle(HttpExchange exchange) {
+                        try {
+                            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                            exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                            
+                            StringBuilder sb = new StringBuilder();
+                            synchronized (eventosGlobales) {
+                                for (int i = 0; i < eventosGlobales.size(); i++) {
+                                    sb.append(i).append("|").append(eventosGlobales.get(i)).append("\n");
+                                }
+                            }
+                            
+                            byte[] response = sb.toString().getBytes(StandardCharsets.UTF_8);
+                            exchange.sendResponseHeaders(200, response.length);
+                            OutputStream os = exchange.getResponseBody();
+                            os.write(response);
+                            os.close();
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    }
+                });
+
                 server.setExecutor(null);
                 server.start();
                 System.out.println("[WM_CENTRAL] Servidor HTTP escuchando frontend en puerto 8082...");

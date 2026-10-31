@@ -6,7 +6,7 @@ services:
     ports:
       - "8081:8080"
       - "8082:8082"
-    command: java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp "src:lib/*" ServidorConcurrente 8080 100.53.212.198:9092
+    command: java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp "src:lib/*" ServidorConcurrente 8080 3.91.58.218:9092
 
   monitor:
     build: .
@@ -24,14 +24,7 @@ services:
       - monitor
     stdin_open: true
     tty: true
-    command: sh -c "sleep 8 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_WS_E 100.53.212.198:9092 monitor:5000"
-
-  operario:
-    build: .
-    container_name: wm_fo
-    depends_on:
-      - central
-    command: sh -c "sleep 12 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_FO 100.53.212.198:9092 peticiones.txt"
+    command: sh -c "sleep 8 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_WS_E 3.91.58.218:9092 monitor:5000"
 
   frontend:
     image: nginx:alpine
