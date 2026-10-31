@@ -8,14 +8,16 @@ public class PuenteKafkaCentral implements Runnable {
     private String brokerIp;
 
     public PuenteKafkaCentral(String brokerIp) {
-        this.brokerIp = "kafka:9092";
+        // Usa la IP real pasada por ServidorConcurrente (AWS EC2)
+        this.brokerIp = (brokerIp != null && !brokerIp.isEmpty()) ? brokerIp : "kafka:9092";
     }
 
     @Override
     public void run() {
         Properties consProps = new Properties();
         consProps.put("bootstrap.servers", this.brokerIp);
-        consProps.put("group.id", "central-group");
+        consProps.put("group.id", "central-puente-group");
+        consProps.put("auto.offset.reset", "latest");
         consProps.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
         consProps.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
 
@@ -28,41 +30,53 @@ public class PuenteKafkaCentral implements Runnable {
              KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
 
             consumer.subscribe(Collections.singletonList("peticiones-riego"));
-            System.out.println("[CENTRAL-KAFKA] Puente iniciado. Escuchando peticiones en: " + this.brokerIp);
+            System.out.println("[CENTRAL-KAFKA] Puente activo. Validando peticiones contra SQLite en broker: " + this.brokerIp);
 
             while (true) {
-                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
 
                 for (ConsumerRecord<String, String> record : records) {
                     String valor = record.value().trim();
-                    System.out.println("[CENTRAL-KAFKA] Petición recibida del Operario: " + valor);
+                    System.out.println("[CENTRAL-KAFKA] Petición recibida: " + valor);
 
                     String idEstacion = "WS-01";
-                    String segundosOrden = "5";
+                    String accion = "5";
+                    String operario = "FO-01";
+
                     if (valor.contains("#")) {
                         String[] partes = valor.split("#");
                         idEstacion = partes[0].trim();
-                        segundosOrden = partes[1].trim();
-                    } else if (valor.startsWith("WS-")) {
-                        idEstacion = valor;
-                        segundosOrden = "5";
+                        accion = partes[1].trim();
+                        if (partes.length >= 3) operario = partes[2].trim();
                     } else {
-                        segundosOrden = valor;
+                        accion = valor;
                     }
 
+                    String tramaCompleta = idEstacion + "#" + accion + "#" + operario;
+
+                    // Las órdenes de control prioritario (STOP, FUGA, BLOCK, ACTIVATE) pasan siempre
+                    if (accion.equalsIgnoreCase("STOP") || accion.equalsIgnoreCase("FUGA") ||
+                        accion.equalsIgnoreCase("BLOCK") || accion.equalsIgnoreCase("ACTIVATE")) {
+                        producer.send(new ProducerRecord<>("ordenes-riego", idEstacion, tramaCompleta));
+                        producer.flush();
+                        continue;
+                    }
+
+                    // Para iniciar un riego, validamos en SQLite que esté AVAILABLE (o que no esté en FAULT/Out of Service)
                     String estadoBD = GestorBD.obtenerEstadoEstacion(idEstacion);
                     boolean estacionDisponible = "AVAILABLE".equalsIgnoreCase(estadoBD);
 
                     if (estacionDisponible) {
-                        System.out.println("[CENTRAL-KAFKA] SQLite confirma " + idEstacion + " AVAILABLE. Enviando orden (" + segundosOrden + "s)...");
-                        producer.send(new ProducerRecord<>("ordenes-riego", idEstacion, segundosOrden));
+                        System.out.println("[CENTRAL-KAFKA] SQLite confirma " + idEstacion + " AVAILABLE. Autorizando riego (" + accion + "s) para " + operario);
+                        producer.send(new ProducerRecord<>("ordenes-riego", idEstacion, tramaCompleta));
+                        producer.flush();
                     } else {
-                        System.out.println("[CENTRAL-KAFKA] Riego denegado para " + idEstacion + ". Estado en SQLite: " + estadoBD);
+                        System.out.println("[CENTRAL-KAFKA] Riego DENEGADO para " + idEstacion + " (Solicitante: " + operario + "). Estado actual en SQLite: " + estadoBD);
                     }
                 }
             }
         } catch (Exception e) {
-            System.out.println("[CENTRAL-KAFKA] Error crítico en el puente: " + e.getMessage());
+            System.err.println("[CENTRAL-KAFKA] Error crítico en el puente: " + e.getMessage());
         }
     }
 }

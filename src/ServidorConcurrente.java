@@ -15,8 +15,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 public class ServidorConcurrente {
-    // Historial compartido en memoria para sincronizar el frontend local
-    private static final List<String> eventosGlobales = Collections.synchronizedList(new ArrayList<>());
+    public static final List<String> eventosGlobales = Collections.synchronizedList(new ArrayList<>());
 
     public static void main(String[] args) {
         if (args.length < 1) {
@@ -32,45 +31,46 @@ public class ServidorConcurrente {
         Thread puente = new Thread(new PuenteKafkaCentral(broker));
         puente.start();
 
-        // Hilo Consumidor en modo Broadcast (group.id único por cada ordenador)
         new Thread(() -> {
             Properties props = new Properties();
             props.put("bootstrap.servers", broker);
-            // UUID único garantiza que TODOS los ordenadores reciban TODOS los mensajes de Kafka
             props.put("group.id", "central-sync-group-" + UUID.randomUUID().toString());
             props.put("auto.offset.reset", "latest");
             props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
             props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
 
             try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-                // Escuchamos tanto los resúmenes finales como las órdenes en tiempo real
                 consumer.subscribe(Arrays.asList("resumenes_riego", "peticiones-riego"));
                 while (true) {
                     ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
                     for (ConsumerRecord<String, String> record : records) {
                         if ("resumenes_riego".equals(record.topic())) {
-                            System.out.println("[KAFKA-AWS] Recibido resumen en la red: " + record.value()); 
+                            System.out.println("[KAFKA-AWS] Recibido resumen en la red: " + record.value());
                             GestorBD.registrarResumen(record.value());
                             eventosGlobales.add("RESUMEN|" + record.value());
                         } else if ("peticiones-riego".equals(record.topic())) {
                             String valor = record.value();
                             String[] partes = valor.split("#");
-                            
-                            if (partes.length == 2) {
+
+                            if (partes.length >= 2) {
                                 String estacion = partes[0];
                                 String accion = partes[1];
-                                
+                                String operario = (partes.length >= 3) ? partes[2] : "FO-01";
+
                                 if (accion.equals("STOP")) {
-                                    System.out.println("[KAFKA-AWS] DETENIENDO riego remotamente en " + estacion);
+                                    System.out.println("[KAFKA-AWS] DETENIENDO riego remotamente en " + estacion + " (Op: " + operario + ")");
                                 } else if (accion.equals("FUGA")) {
                                     System.out.println("[KAFKA-AWS] ALTERANDO estado de fuga en " + estacion);
+                                } else if (accion.equals("BLOCK")) {
+                                    System.out.println("[KAFKA-AWS] BLOQUEANDO estación " + estacion + " (Out of Service)");
+                                    GestorBD.actualizarEstadoEstacion(estacion, "Out of Service");
+                                } else if (accion.equals("ACTIVATE")) {
+                                    System.out.println("[KAFKA-AWS] ACTIVANDO estación " + estacion + " (Available)");
+                                    GestorBD.actualizarEstadoEstacion(estacion, "AVAILABLE");
                                 } else {
-                                    System.out.println("[KAFKA-AWS] INICIANDO riego en " + estacion + " durante " + accion + " segundos");
+                                    System.out.println("[KAFKA-AWS] INICIANDO riego en " + estacion + " durante " + accion + "s (Solicita: " + operario + ")");
                                 }
-                            } else {
-                                System.out.println("[KAFKA-AWS] Orden cruda recibida: " + valor);
                             }
-                            
                             eventosGlobales.add("ORDEN|" + valor);
                         }
                     }
@@ -80,33 +80,34 @@ public class ServidorConcurrente {
             }
         }).start();
 
-        // Servidor HTTP para comunicarse con el index.html (Puerto 8082)
         new Thread(() -> {
             try {
                 HttpServer server = HttpServer.create(new InetSocketAddress(8082), 0);
-                
-                // Endpoint 1: Inyectar órdenes en Kafka
+
                 server.createContext("/regar", new HttpHandler() {
                     @Override
                     public void handle(HttpExchange exchange) {
                         try {
                             exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
                             String query = exchange.getRequestURI().getQuery();
-                            
+
                             if (query != null && query.startsWith("orden=")) {
                                 String ordenRaw = query.split("=")[1];
                                 String orden = java.net.URLDecoder.decode(ordenRaw, "UTF-8");
-                                
+
                                 Properties prodProps = new Properties();
                                 prodProps.put("bootstrap.servers", broker);
                                 prodProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
                                 prodProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-                                
+
                                 try (KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
                                     producer.send(new ProducerRecord<>("peticiones-riego", orden));
+                                    // También lo publicamos directo en ordenes-riego para respuesta inmediata del Engine
+                                    producer.send(new ProducerRecord<>("ordenes-riego", orden));
+                                    producer.flush();
                                     System.out.println("[WM_CENTRAL-HTTP] Orden inyectada desde Web: " + orden);
                                 }
-                                
+
                                 byte[] response = "Orden procesada en Kafka".getBytes(StandardCharsets.UTF_8);
                                 exchange.sendResponseHeaders(200, response.length);
                                 OutputStream os = exchange.getResponseBody();
@@ -119,21 +120,20 @@ public class ServidorConcurrente {
                     }
                 });
 
-                // Endpoint 2: Devolver los eventos de Kafka al frontend para sincronizar pantallas
                 server.createContext("/eventos", new HttpHandler() {
                     @Override
                     public void handle(HttpExchange exchange) {
                         try {
                             exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
                             exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
-                            
+
                             StringBuilder sb = new StringBuilder();
                             synchronized (eventosGlobales) {
                                 for (int i = 0; i < eventosGlobales.size(); i++) {
                                     sb.append(i).append("|").append(eventosGlobales.get(i)).append("\n");
                                 }
                             }
-                            
+
                             byte[] response = sb.toString().getBytes(StandardCharsets.UTF_8);
                             exchange.sendResponseHeaders(200, response.length);
                             OutputStream os = exchange.getResponseBody();

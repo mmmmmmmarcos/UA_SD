@@ -30,7 +30,7 @@
             border-radius: 5px;
             padding: 15px;
             flex: 1;
-            min-width: 300px;
+            min-width: 320px;
         }
 
             .panel h2 {
@@ -92,6 +92,14 @@
                     background-color: #e67e22;
                 }
 
+            button.oos {
+                background-color: #d35400;
+            }
+
+            button.activar {
+                background-color: #27ae60;
+            }
+
             button:disabled {
                 background-color: #95a5a6;
                 cursor: not-allowed;
@@ -109,31 +117,76 @@
         }
 
         .estado-box {
-            padding: 8px;
-            background: #eef;
-            border-left: 4px solid #3498db;
-            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 12px;
             font-size: 0.9em;
+            color: white;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+
+        @keyframes parpadeoRiego {
+            0% {
+                background-color: #2ecc71;
+            }
+
+            50% {
+                background-color: #1e8449;
+            }
+
+            100% {
+                background-color: #2ecc71;
+            }
+        }
+
+        .estado-available {
+            background-color: #27ae60;
+        }
+
+        .estado-watering {
+            animation: parpadeoRiego 1s infinite;
+        }
+
+        .estado-leak {
+            background-color: #e74c3c;
+        }
+
+        .estado-oos {
+            background-color: #f39c12;
+        }
+
+        .estado-disconnected {
+            background-color: #7f8c8d;
         }
     </style>
 </head>
 <body>
-    <h1>Water Management - Panel de Control Distribuido</h1>
+    <h1>Water Management - Panel de Control Distribuido (WM_Central)</h1>
     <div class="contenedor">
 
         <div class="panel">
-            <h2>1. Control de Estaciones (WS_M / WS_E)</h2>
+            <h2>1. Control de Estaciones y Gobierno Central</h2>
             <div class="campo">
-                <label for="estacionSelect">Estación de Riego:</label>
-                <select id="estacionSelect">
-                    <option value="WS-01">Estación 1 (WS-01)</option>
-                    <option value="WS-02">Estación 2 (WS-02)</option>
-                    <option value="WS-03">Estación 3 (WS-03)</option>
+                <label for="estacionSelect">Estación de Riego (ID y Ubicación):</label>
+                <select id="estacionSelect" onchange="cambiarEstacionVista()">
+                    <option value="WS-01">WS-01 (ZonaNorte)</option>
+                    <option value="WS-02">WS-02 (ParqueCentral)</option>
+                    <option value="WS-03">WS-03 (JardinSur)</option>
                 </select>
             </div>
-            <div class="estado-box">
-                Estado: <strong id="txtEstado">Apagado</strong> | Caudal actual: <strong id="txtCaudal">0</strong> L/min
+            <div class="campo">
+                <label for="inputOperario">ID Operario solicitante:</label>
+                <input type="text" id="inputOperario" value="FO-01">
             </div>
+
+            <div id="cajaEstado" class="estado-box estado-available">
+                Estado: <span id="txtEstado">Available</span><br>
+                Caudal: <span id="txtCaudal">0.0</span> L/min |
+                Volumen Acumulado: <span id="txtVolumen">0.00</span> L |
+                Operario: <span id="txtOperario">-</span>
+            </div>
+
             <div class="campo">
                 <label for="inputSegundos">Ajustar Segundos de Riego:</label>
                 <input type="number" id="inputSegundos" value="5" min="1" max="100">
@@ -141,22 +194,26 @@
             <button id="btnIniciar" onclick="cambiarEstado(true)">Iniciar Riego</button>
             <button id="btnDetener" class="detener" onclick="cambiarEstado(false)" disabled>Detener Riego</button>
             <button class="fuga" onclick="toggleFuga()">Provocar/Arreglar Fuga</button>
+            <hr>
+            <button class="oos" onclick="cambiarServicio(false)">Bloquear WS (Out of Service)</button>
+            <button class="activar" onclick="cambiarServicio(true)">Activar WS (Available)</button>
         </div>
 
         <div class="panel">
-            <h2>2. Cola de Trabajo (Simulación peticiones.txt)</h2>
+            <h2>2. Cola de Trabajo Manual (Simulación WM_FO)</h2>
             <div class="campo">
-                <label for="txtPeticiones">Archivo de peticiones pendiente:</label>
-                <textarea id="txtPeticiones" rows="6">WS-01#4
-WS-02#6
-WS-01#5</textarea>
+                <label for="txtPeticiones">Archivo de peticiones pendiente (ESTACION#SEGUNDOS#OPERARIO):</label>
+                <textarea id="txtPeticiones" rows="6">WS-01#4#FO-01
+WS-02#6#FO-02
+WS-01#5#FO-01</textarea>
             </div>
             <button onclick="procesarSiguientePeticion()">Procesar Siguiente Orden</button>
+            <button onclick="procesarColaAutomatica()" style="background-color: #27ae60;">Ejecutar Toda la Cola (Auto 4s)</button>
         </div>
     </div>
 
     <div style="margin-top: 20px;">
-        <h2>Consola de Eventos Globales (Sincronizada con Kafka AWS)</h2>
+        <h2>Consola de Eventos Globales (Sincronizada con Kafka AWS y Sockets)</h2>
         <textarea id="logConsole" readonly></textarea>
         <button onclick="limpiarLog()" style="margin-top: 5px; background: #7f8c8d;">Limpiar Consola</button>
     </div>
@@ -164,9 +221,12 @@ WS-01#5</textarea>
     <script>
         let riegoActivo = false;
         let fugaActiva = false;
+        let fueraDeServicio = false;
         let ultimoEventoId = -1;
         let primeraCarga = true;
-        let intervaloTimer = null; // El cronómetro absoluto
+        let intervaloTimer = null;
+        let litrosAcumulados = 0.0;
+        const CAUDAL_L_MIN = 45.5;
 
         function log(msg) {
             const time = new Date().toLocaleTimeString();
@@ -175,63 +235,111 @@ WS-01#5</textarea>
             consoleBox.scrollTop = consoleBox.scrollHeight;
         }
 
-        function actualizarUIEstado(activo, textoEspecial = null) {
-            riegoActivo = activo;
-            const txtEstado = document.getElementById('txtEstado');
-            const txtCaudal = document.getElementById('txtCaudal');
+        function setVisualState(claseCss, textoEstado, caudal, operario) {
+            const caja = document.getElementById('cajaEstado');
+            caja.className = 'estado-box ' + claseCss;
+            document.getElementById('txtEstado').innerText = textoEstado;
+            document.getElementById('txtCaudal').innerText = caudal;
+            document.getElementById('txtOperario').innerText = operario;
+        }
 
-            document.getElementById('btnIniciar').disabled = activo;
-            document.getElementById('btnDetener').disabled = !activo;
-
-            if (textoEspecial) {
-                txtEstado.innerText = textoEspecial;
-                txtEstado.style.color = "orange";
-                txtCaudal.innerText = "0";
-            } else {
-                if (activo) {
-                    txtEstado.style.color = "green";
-                    txtCaudal.innerText = "15";
-                } else {
-                    txtEstado.innerText = "Apagado";
-                    txtEstado.style.color = "red";
-                    txtCaudal.innerText = "0";
-                }
-            }
+        function actualizarBotones() {
+            const bloqueado = fugaActiva || fueraDeServicio;
+            document.getElementById('btnIniciar').disabled = riegoActivo || bloqueado;
+            document.getElementById('btnDetener').disabled = !riegoActivo;
         }
 
         function mandarFetchCentral(orden) {
             fetch(`http://localhost:8082/regar?orden=${encodeURIComponent(orden)}`)
-                .catch(err => log(`[ERROR] HTTP: No se alcanzó la Central local. ${err}`));
+                .catch(err => log(`[ERROR] Imposible conectar con WM_Central: ${err}`));
+        }
+
+        function iniciarCuentaAtrasLocal(estacion, segundos, operario) {
+            clearInterval(intervaloTimer);
+            riegoActivo = true;
+            litrosAcumulados = 0.0;
+            let s = segundos;
+
+            actualizarBotones();
+            setVisualState('estado-watering', `Watering (${s}s restantes)`, CAUDAL_L_MIN.toFixed(1), operario);
+
+            intervaloTimer = setInterval(() => {
+                s--;
+                litrosAcumulados += (CAUDAL_L_MIN / 60.0);
+                document.getElementById('txtVolumen').innerText = litrosAcumulados.toFixed(2);
+
+                if (s > 0 && riegoActivo) {
+                    document.getElementById('txtEstado').innerText = `Watering (${s}s restantes)`;
+                } else {
+                    clearInterval(intervaloTimer);
+                    if (riegoActivo) {
+                        riegoActivo = false;
+                        actualizarBotones();
+                        setVisualState('estado-available', 'Available', '0.0', '-');
+                        log(`[TIMER] Riego completado en ${estacion}. Enviando confirmación STOP.`);
+                        mandarFetchCentral(`${estacion}#STOP#${operario}`);
+                    }
+                }
+            }, 1000);
         }
 
         function cambiarEstado(activo) {
-            if (activo && riegoActivo) return;
+            if (activo && (riegoActivo || fugaActiva || fueraDeServicio)) return;
             if (!activo && !riegoActivo) return;
 
             const est = document.getElementById('estacionSelect').value;
-            const segs = document.getElementById('inputSegundos').value;
+            const segs = parseInt(document.getElementById('inputSegundos').value) || 5;
+            const op = document.getElementById('inputOperario').value.trim() || 'FO-01';
 
             if (activo) {
-                mandarFetchCentral(`${est}#${segs}`);
+                mandarFetchCentral(`${est}#${segs}#${op}`);
+                iniciarCuentaAtrasLocal(est, segs, op);
             } else {
-                mandarFetchCentral(`${est}#STOP`);
+                clearInterval(intervaloTimer);
+                riegoActivo = false;
+                actualizarBotones();
+                setVisualState('estado-available', 'Available', '0.0', '-');
+                mandarFetchCentral(`${est}#STOP#${op}`);
             }
         }
 
         function toggleFuga() {
             const est = document.getElementById('estacionSelect').value;
-            mandarFetchCentral(`${est}#FUGA`);
+            const op = document.getElementById('inputOperario').value.trim() || 'CENTRAL';
+            mandarFetchCentral(`${est}#FUGA#${op}`);
+        }
+
+        function cambiarServicio(activar) {
+            const est = document.getElementById('estacionSelect').value;
+            const accion = activar ? 'ACTIVATE' : 'BLOCK';
+            mandarFetchCentral(`${est}#${accion}#CENTRAL`);
+        }
+
+        function cambiarEstacionVista() {
+            const est = document.getElementById('estacionSelect').value;
+            log(`[UI] Supervisando estación ${est}.`);
         }
 
         function procesarSiguientePeticion() {
             const area = document.getElementById('txtPeticiones');
             const lineas = area.value.split('\n').filter(l => l.trim() !== '');
-            if (lineas.length === 0) { log('[WM_FO] No hay peticiones.'); return; }
+            if (lineas.length === 0) { log('[WM_FO] No hay peticiones en la cola.'); return; }
 
             const siguiente = lineas.shift();
             area.value = lineas.join('\n');
-            log(`[WM_FO] Extrayendo orden de la cola: "${siguiente}"`);
+            log(`[WM_FO] Enviando orden de la cola: "${siguiente}"`);
             mandarFetchCentral(siguiente);
+        }
+
+        function procesarColaAutomatica() {
+            const area = document.getElementById('txtPeticiones');
+            const lineas = area.value.split('\n').filter(l => l.trim() !== '');
+            if (lineas.length === 0) {
+                log('[WM_FO] Cola automática finalizada.');
+                return;
+            }
+            procesarSiguientePeticion();
+            setTimeout(procesarColaAutomatica, 4000);
         }
 
         function sincronizarConKafka() {
@@ -259,50 +367,84 @@ WS-01#5</textarea>
                                 ultimoEventoId = id;
 
                                 if (tipo === 'ORDEN') {
-                                    const [estacion, accion] = contenido.split('#');
+                                    const trozos = contenido.split('#');
+                                    const estacion = trozos[0];
+                                    const accion = trozos[1];
+                                    const operario = trozos[2] || 'FO-01';
 
                                     if (estacion && ['WS-01', 'WS-02', 'WS-03'].includes(estacion)) {
                                         document.getElementById('estacionSelect').value = estacion;
                                     }
 
                                     if (accion === 'STOP') {
-                                        clearInterval(intervaloTimer); // Frenamos el cronómetro
-                                        log(`[KAFKA] La estación ${estacion} ha DETENIDO el riego.`);
-                                        actualizarUIEstado(false);
+                                        clearInterval(intervaloTimer);
+                                        riegoActivo = false;
+                                        actualizarBotones();
+                                        setVisualState('estado-available', 'Available', '0.0', '-');
+                                        log(`[KAFKA] Estación ${estacion} ha DETENIDO el riego.`);
                                     } else if (accion === 'FUGA') {
                                         clearInterval(intervaloTimer);
+                                        riegoActivo = false;
                                         fugaActiva = !fugaActiva;
-                                        log(`[KAFKA] Fuga en ${estacion} ${fugaActiva ? 'PROVOCADA' : 'REPARADA'}.`);
-                                        actualizarUIEstado(false, fugaActiva ? "ALERTA FUGA" : "Apagado (Fuga Arreglada)");
+                                        actualizarBotones();
+                                        if (fugaActiva) {
+                                            setVisualState('estado-leak', 'Leak (FUGA DETECTADA)', '0.0', '-');
+                                        } else {
+                                            setVisualState('estado-available', 'Available', '0.0', '-');
+                                        }
+                                        log(`[KAFKA] Fuga en ${estacion}: ${fugaActiva ? 'DETECTADA (Riego abortado)' : 'REPARADA'}.`);
+                                    } else if (accion === 'BLOCK') {
+                                        clearInterval(intervaloTimer);
+                                        riegoActivo = false;
+                                        fueraDeServicio = true;
+                                        actualizarBotones();
+                                        setVisualState('estado-oos', 'Out of Service', '0.0', '-');
+                                        log(`[CENTRAL] Estación ${estacion} bloqueada (Out of Service).`);
+                                    } else if (accion === 'ACTIVATE') {
+                                        fueraDeServicio = false;
+                                        fugaActiva = false;
+                                        actualizarBotones();
+                                        setVisualState('estado-available', 'Available', '0.0', '-');
+                                        log(`[CENTRAL] Estación ${estacion} activada (Available).`);
                                     } else {
                                         const segundos = parseInt(accion);
-                                        log(`[KAFKA] RIEGO INICIADO en ${estacion} por ${segundos}s.`);
-                                        actualizarUIEstado(true);
-
-                                        // LA MAGIA: LA CUENTA ATRÁS VISUAL Y EL STOP AUTOMÁTICO
-                                        let s = segundos;
-                                        clearInterval(intervaloTimer);
-                                        document.getElementById('txtEstado').innerText = `EN RIEGO (${s}s restantes)`;
-
-                                        intervaloTimer = setInterval(() => {
-                                            s--;
-                                            if (s > 0) {
-                                                if (riegoActivo) {
-                                                    document.getElementById('txtEstado').innerText = `EN RIEGO (${s}s restantes)`;
-                                                }
-                                            } else {
-                                                clearInterval(intervaloTimer);
-                                                if (riegoActivo) {
-                                                    log(`[TIMER] Tiempo finalizado. Ejecutando STOP automático.`);
-                                                    mandarFetchCentral(`${estacion}#STOP`);
-                                                }
+                                        if (!isNaN(segundos)) {
+                                            log(`[KAFKA] RIEGO AUTORIZADO en ${estacion} por ${segundos}s (Operario: ${operario}).`);
+                                            if (!riegoActivo) {
+                                                iniciarCuentaAtrasLocal(estacion, segundos, operario);
                                             }
-                                        }, 1000);
+                                        }
                                     }
                                 } else if (tipo === 'RESUMEN') {
                                     clearInterval(intervaloTimer);
-                                    log(`[KAFKA-RESUMEN] Riego registrado: ${contenido}`);
-                                    actualizarUIEstado(false);
+                                    riegoActivo = false;
+                                    actualizarBotones();
+                                    const trozos = contenido.split('#');
+                                    if (trozos.length >= 3) {
+                                        document.getElementById('txtVolumen').innerText = trozos[2];
+                                    }
+                                    if (!fugaActiva && !fueraDeServicio) {
+                                        setVisualState('estado-available', 'Available', '0.0', '-');
+                                    }
+                                    log(`[KAFKA-RESUMEN] Fin de riego consolidado en BD: ${contenido}`);
+                                } else if (tipo === 'ESTADO_TCP') {
+                                    const [estacion, estadoHw] = contenido.split('#');
+                                    log(`[SOCKET-TCP] Cambio de estado en ${estacion}: ${estadoHw}`);
+                                    if (estadoHw === 'Desconectada') {
+                                        clearInterval(intervaloTimer);
+                                        riegoActivo = false;
+                                        setVisualState('estado-disconnected', 'Disconnected', '0.0', '-');
+                                    } else if (estadoHw === 'Fuga' || estadoHw === 'Averiado') {
+                                        clearInterval(intervaloTimer);
+                                        riegoActivo = false;
+                                        fugaActiva = true;
+                                        actualizarBotones();
+                                        setVisualState('estado-leak', 'Leak / Averiada', '0.0', '-');
+                                    } else if (estadoHw === 'Disponible') {
+                                        fugaActiva = false;
+                                        actualizarBotones();
+                                        setVisualState('estado-available', 'Available', '0.0', '-');
+                                    }
                                 }
                             }
                         }
@@ -310,9 +452,9 @@ WS-01#5</textarea>
                 }).catch(err => { });
         }
 
-        setInterval(sincronizarConKafka, 1500);
+        setInterval(sincronizarConKafka, 1000);
         function limpiarLog() { document.getElementById('logConsole').value = ''; }
-        log("[INICIO] Sistema listo. Temporizador sincronizado con red Kafka.");
+        log("[INICIO] Panel WM_Central operativo. Sincronizado con Kafka y Sockets.");
     </script>
 </body>
 </html>
