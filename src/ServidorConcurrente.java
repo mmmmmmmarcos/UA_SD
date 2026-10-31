@@ -99,20 +99,32 @@ public class ServidorConcurrente {
                                 prodProps.put("bootstrap.servers", broker);
                                 prodProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
                                 prodProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+                                
+                                // Límite de 3 segundos para detectar si AWS está caído
+                                prodProps.put("max.block.ms", "3000");
 
                                 try (KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
-                                    producer.send(new ProducerRecord<>("peticiones-riego", orden));
-                                    // También lo publicamos directo en ordenes-riego para respuesta inmediata del Engine
-                                    producer.send(new ProducerRecord<>("ordenes-riego", orden));
+                                    // Añadido el .get() para forzar la espera y capturar el error si AWS no responde
+                                    producer.send(new ProducerRecord<>("peticiones-riego", orden)).get();
+                                    producer.send(new ProducerRecord<>("ordenes-riego", orden)).get();
                                     producer.flush();
-                                    System.out.println("[WM_CENTRAL-HTTP] Orden inyectada desde Web: " + orden);
+                                    System.out.println("[WM_CENTRAL-HTTP] Orden inyectada desde Web y confirmada en AWS: " + orden);
+                                    
+                                    byte[] response = "Orden procesada en Kafka".getBytes(StandardCharsets.UTF_8);
+                                    exchange.sendResponseHeaders(200, response.length);
+                                    OutputStream os = exchange.getResponseBody();
+                                    os.write(response);
+                                    os.close();
+                                } catch (Exception e) {
+                                    // Captura la excepción si AWS no está disponible tras 3 segundos
+                                    System.err.println("[ALERTA] Imposible enviar la orden. El broker Kafka en AWS está caído o inaccesible.");
+                                    
+                                    byte[] response = "Error: Broker Kafka inaccesible".getBytes(StandardCharsets.UTF_8);
+                                    exchange.sendResponseHeaders(503, response.length);
+                                    OutputStream os = exchange.getResponseBody();
+                                    os.write(response);
+                                    os.close();
                                 }
-
-                                byte[] response = "Orden procesada en Kafka".getBytes(StandardCharsets.UTF_8);
-                                exchange.sendResponseHeaders(200, response.length);
-                                OutputStream os = exchange.getResponseBody();
-                                os.write(response);
-                                os.close();
                             }
                         } catch (Exception e) {
                             e.printStackTrace();
