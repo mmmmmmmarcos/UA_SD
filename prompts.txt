@@ -11,3 +11,14 @@
 11le estoy haciendo un split('#') a la string que leo del fichero ('WS-01#5') para sacar el ID y los segundos. si me llega la orden 'STOP' a secas sin la almohadilla, el split me va a dar un array out of bounds si pillo la posición 1, no? le pongo un if de length == 2 antes y au?
 12 si quiero que todos mis nodos de la central reciban los mensajes del topic de kafka a la vez (en plan broadcast) para actualizar las pantallas, con meterle un UUID random al group.id de cada uno lo tengo arreglado y no me balancea la carga, no?"
 13oye el javac de windows me está escupiendo errores de compilación de sintaxis donde tengo tildes o ñ en los sysos de java. cómo le paso el parámetro para obligarle a leer los .java en utf-8?
+14¿si le meto un synchronized al método del insert de sqlite me quito el 'database is locked' de encima?
+15para hacer un insert y que actualice si la clave ya existe en sqlite era con ON CONFLICT DO UPDATE, no?
+16¿cómo obligo a java a soltar el puerto al matar el proceso para que no dé el Address already in use?
+17si el socket del cliente se corta de golpe sin avisar, ¿el readLine() del servidor devuelve null directamente?
+18para sacar el texto entre los caracteres ASCII 2 y 3 del socket, ¿le tiro un substring con indexOf y au?			
+19¿con declarar la variable como volatile ya sirve para que la lean varios hilos sin liarla con cerrojos?
+20¿levantar hilos a pelo con new Thread() en el main es muy chapuza o para esta práctica va que chuta?
+21para esperar 4 segundos entre peticiones al leer el txt, ¿le meto un Thread.sleep(4000) en el while y arreando?
+22si le hago un split('#') a un string que resulta que no tiene almohadilla, ¿me va a cascar un out of bounds?
+23para hacer broadcast en kafka y que todos lean el topic a la vez, ¿le concateno un UUID random al group.id?
+24¿cómo era el flag de javac por consola para compilar los .java en utf-8 y que no peten las tildes?
