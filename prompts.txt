@@ -1,2 +1,13 @@
 1 te envio el documento de la practica, parte el trabajo para mi y para mi compañero
 2 como hago para que no me de error cuando compilo las tildes
+3 me da el error 'database is locked' en sqlite porque tengo al consumidor de kafka y a los hilos de los sockets haciendo inserts a la vez. si le casco un synchronized al método del GestorBD me vale o hay algo más óptimo?
+4en sqlite cómo era la sintaxis para hacer un insert pero que si la clave primaria ya existe me haga un update del estado? es con ON CONFLICT DO UPDATE o algo así no?
+5cada vez que corto el servidor con ctrl+c y lo vuelvo a lanzar me peta con 'address already in use'. cómo hago para que java suelte el puerto al instante al matar el proceso? metiendo el socket en un try with resources?
+6si el monitor le está mandando 'STATUS' por el printwriter al motor cada segundo, y de repente cierro la terminal del motor, ¿qué devuelve el readLine() del monitor, un null o salta excepción directamente? para saber cómo cazar la caíd
+7me llegan las tramas por los sockets envueltas con los caracteres ASCII 2 (STX) y 3 (ETX). si le hago un substring pillando los indexOf de (char)2 y (char)3 saco el texto limpio del medio a lo bruto y a correr, verdad?
+8estoy levantando 4 hilos a pelo con new Thread(() -> {...}).start() en el main de mi WM_WS_E. para una práctica de clase va que chuta o debería montarme un ExecutorService obligatoriamente?
+9tengo un hilo leyendo el teclado y otro llevando el temporizador del riego. si declaro la variable 'boolean hayFuga' como 'volatile' sirve para que los dos la lean de la RAM al momento sin liarla con locks raros?
+10estoy leyendo el peticiones.txt línea a línea. para esperar 4 segundos entre que mando una y leo la siguiente, le meto un Thread.sleep(4000) dentro del while directamente y ya está, no?
+11le estoy haciendo un split('#') a la string que leo del fichero ('WS-01#5') para sacar el ID y los segundos. si me llega la orden 'STOP' a secas sin la almohadilla, el split me va a dar un array out of bounds si pillo la posición 1, no? le pongo un if de length == 2 antes y au?
+12 si quiero que todos mis nodos de la central reciban los mensajes del topic de kafka a la vez (en plan broadcast) para actualizar las pantallas, con meterle un UUID random al group.id de cada uno lo tengo arreglado y no me balancea la carga, no?"
+13oye el javac de windows me está escupiendo errores de compilación de sintaxis donde tengo tildes o ñ en los sysos de java. cómo le paso el parámetro para obligarle a leer los .java en utf-8?
