@@ -40,9 +40,11 @@ services:
   monitor:
     build: .
     container_name: wm_monitor
+    depends_on:
+      - central
     ports:
       - "5000:5000"
-    command: sh -c "sleep 5 && java -cp src WM_WS_M 34.228.44.34:8080 5000 WS-01 ZonaNorte"
+    command: sh -c "sleep 15 && java -cp src WM_WS_M central:8080 5000 WS-01 ZonaNorte"
 
   engine:
     build: .
@@ -51,11 +53,11 @@ services:
       - monitor
     stdin_open: true
     tty: true
-    command: sh -c "sleep 8 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_WS_E 34.228.44.34:9092 monitor:5000 WS-01"
+    command: sh -c "sleep 20 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_WS_E 34.228.44.34:9092 monitor:5000 WS-01"
 
   operario:
     build: .
     container_name: wm_fo
     stdin_open: true
     tty: true
-    command: sh -c "sleep 10 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_FO 34.228.44.34:9092 FO-01 MANUAL"
+    command: sh -c "sleep 25 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -cp 'src:lib/*' WM_FO 34.228.44.34:9092 FO-01 MANUAL"
