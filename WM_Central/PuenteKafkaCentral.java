@@ -8,7 +8,6 @@ public class PuenteKafkaCentral implements Runnable {
     private String brokerIp;
 
     public PuenteKafkaCentral(String brokerIp) {
-        // Usa la IP real pasada por ServidorConcurrente (AWS EC2)
         this.brokerIp = (brokerIp != null && !brokerIp.isEmpty()) ? brokerIp : "kafka:9092";
     }
 
@@ -54,7 +53,6 @@ public class PuenteKafkaCentral implements Runnable {
 
                     String tramaCompleta = idEstacion + "#" + accion + "#" + operario;
 
-                    // Las órdenes de control prioritario (STOP, FUGA, BLOCK, ACTIVATE) pasan siempre
                     if (accion.equalsIgnoreCase("STOP") || accion.equalsIgnoreCase("FUGA") ||
                         accion.equalsIgnoreCase("BLOCK") || accion.equalsIgnoreCase("ACTIVATE")) {
                         producer.send(new ProducerRecord<>("ordenes-riego", idEstacion, tramaCompleta));
@@ -62,7 +60,6 @@ public class PuenteKafkaCentral implements Runnable {
                         continue;
                     }
 
-                    // Para iniciar un riego, validamos en SQLite que esté AVAILABLE (o que no esté en FAULT/Out of Service)
                     String estadoBD = GestorBD.obtenerEstadoEstacion(idEstacion);
                     boolean estacionDisponible = "AVAILABLE".equalsIgnoreCase(estadoBD);
 

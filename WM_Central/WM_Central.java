@@ -14,12 +14,12 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
-public class ServidorConcurrente {
+public class WM_Central {
     public static final List<String> eventosGlobales = Collections.synchronizedList(new ArrayList<>());
 
     public static void main(String[] args) {
         if (args.length < 1) {
-            System.out.println("Uso: java ServidorConcurrente <puerto_escucha> [broker_kafka]");
+            System.out.println("Uso: java WM_Central <puerto_escucha> [broker_kafka]");
             System.exit(1);
         }
 
@@ -100,11 +100,9 @@ public class ServidorConcurrente {
                                 prodProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
                                 prodProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
                                 
-                                // Límite de 3 segundos para detectar si AWS está caído
                                 prodProps.put("max.block.ms", "3000");
 
                                 try (KafkaProducer<String, String> producer = new KafkaProducer<>(prodProps)) {
-                                    // Añadido el .get() para forzar la espera y capturar el error si AWS no responde
                                     producer.send(new ProducerRecord<>("peticiones-riego", orden)).get();
                                     producer.send(new ProducerRecord<>("ordenes-riego", orden)).get();
                                     producer.flush();
@@ -116,7 +114,6 @@ public class ServidorConcurrente {
                                     os.write(response);
                                     os.close();
                                 } catch (Exception e) {
-                                    // Captura la excepción si AWS no está disponible tras 3 segundos
                                     System.err.println("[ALERTA] Imposible enviar la orden. El broker Kafka en AWS está caído o inaccesible.");
                                     
                                     byte[] response = "Error: Broker Kafka inaccesible".getBytes(StandardCharsets.UTF_8);

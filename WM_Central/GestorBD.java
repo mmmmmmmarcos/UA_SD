@@ -13,7 +13,6 @@ public class GestorBD {
                 stmt.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY, nombre TEXT NOT NULL)");
                 stmt.execute("CREATE TABLE IF NOT EXISTS historico_riegos (id INTEGER PRIMARY KEY AUTOINCREMENT, id_estacion TEXT, duracion INTEGER, litros REAL, operario TEXT DEFAULT 'FO-01', fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
 
-                // Migración suave por si la tabla antigua ya existe en el volumen sin columna ubicacion u operario
                 try { stmt.execute("ALTER TABLE estaciones ADD COLUMN ubicacion TEXT DEFAULT 'ParqueCentral'"); } catch (SQLException ignored) {}
                 try { stmt.execute("ALTER TABLE historico_riegos ADD COLUMN operario TEXT DEFAULT 'FO-01'"); } catch (SQLException ignored) {}
 
@@ -23,7 +22,6 @@ public class GestorBD {
                 stmt.execute("INSERT OR IGNORE INTO operarios (id, nombre) VALUES ('FO-01', 'Operario Campo 1')");
                 stmt.execute("INSERT OR IGNORE INTO operarios (id, nombre) VALUES ('FO-02', 'Operario Campo 2')");
 
-                // Al reiniciar WM_Central, todas las estaciones pasan a DISCONNECTED hasta que su Monitor conecte
                 stmt.execute("UPDATE estaciones SET estado = 'DISCONNECTED'");
 
                 System.out.println("\n=== [SQLITE] ESTACIONES REGISTRADAS EN WM_CENTRAL AL INICIO ===");
@@ -84,7 +82,6 @@ public class GestorBD {
     }
 
     public static synchronized void registrarResumen(String tramaResumen) {
-        // Formato esperado: WS-01#segundos#litros[#operario]
         String[] partes = tramaResumen.split("#");
         if (partes.length < 3) return;
         String operario = (partes.length >= 4) ? partes[3] : "FO-01";
