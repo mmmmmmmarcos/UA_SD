@@ -32,3 +32,8 @@ ahora funciona pero cuando mi compa se conecta m salen estos errores de desconex
 mi compañer esta en su casa y yo en la mia, asi q descarto q sea problema del router
 quiero q cuando apague el contenedor se capture la excepcion pq ahora se cierra y no sale nada en terminal. es muy dificil hacer q salte un print mio? q parte dl codigo necesitas q t pase para mirarlo?
 m sale esto cuando intento regar en otra zona (ws-02). el mensaje llega por kafka pero el motor no riega, q parametro tengo q cambiarle al motor para probar las otras zonas?
+como leo dsd javascript el json del backend pa sacar solo la ltima orden? me escupe tooodo el txt con las ordenes pasadas y se me desborda el div. me guardo el id en una variable?
+se me quedan los puertos pillaos en linux (TIME_WAIT) si mato el monitor con ctrl+c. usando el try-with-resources de java se libera el serverSocket al instante?
+hay alguna forma d que sqlite me ponga las estaciones en DISCONNECTED al encender WM_Central pa q no salgan en Available por defecto?
+duda de hilos en WM_WS_E. tengo q leer de kafka, llevar el timer de riego y leer el scanner. si toco 'regando' desde los tres sitios le pongo volatile o tiro d synchronized?
+al subir kafka a aws me crashea pq se come la ram de la t2.micro. si le meto KAFKA_HEAP_OPTS="-Xmx512M" en el run de docker se soluciona el out of memory?

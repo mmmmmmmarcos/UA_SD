@@ -29,14 +29,13 @@ public class WM_WS_M {
             enviarTrama(outCentral, "REGISTER#" + idEstacion + "#" + ubicacion);
             System.out.println("[MONITOR " + idEstacion + "] Autenticación Central: " + inCentral.readUTF());
 
-            //si el Engine cae y se reinicia, el monitor vuelve a aceptarlo
             while (true) {
                 System.out.println("[MONITOR " + idEstacion + "] Escuchando puerto " + puertoEscucha + " para conexión de WM_WS_E...");
                 try (Socket socketMotor = serverSocket.accept();
                      BufferedReader inMotor = new BufferedReader(new InputStreamReader(socketMotor.getInputStream()));
                      PrintWriter outMotor = new PrintWriter(socketMotor.getOutputStream(), true)) {
 
-                    socketMotor.setSoTimeout(2500); //detecta colapso del motor en 2.5 max
+                    socketMotor.setSoTimeout(2500); 
                     System.out.println("[MONITOR " + idEstacion + "] Engine conectado. Iniciando supervisión (1s).");
 
                     while (true) {

@@ -34,7 +34,6 @@ public class WM_WS_E {
         int monitorPort = Integer.parseInt(monitorParams[1]);
         if (args.length >= 3) ID_ESTACION = args[2];
 
-        // 1. EL CRONÓMETRO FÍSICO DEL ENGINE
         Thread timerThread = new Thread(() -> {
             while (true) {
                 try {
@@ -56,7 +55,6 @@ public class WM_WS_E {
         });
         timerThread.start();
 
-        // 2. MENÚ INTERACTIVO EN CONSOLA
         Thread inputThread = new Thread(() -> {
             Scanner scanner = new Scanner(System.in);
             imprimirMenu();
@@ -96,7 +94,6 @@ public class WM_WS_E {
         });
         inputThread.start();
 
-        // 3. ANTENA KAFKA (Escucha tanto ordenes-riego como peticiones-riego para máxima compatibilidad)
         Thread kafkaThread = new Thread(() -> {
             Properties props = new Properties();
             props.put("bootstrap.servers", brokerUri);
@@ -114,11 +111,10 @@ public class WM_WS_E {
                         String accion = raw;
                         String op = "FO-01";
 
-                        // Soporta tanto "5" como "WS-01#5" o "WS-01#5#FO-01"
                         if (raw.contains("#")) {
                             String[] partes = raw.split("#");
                             if (!partes[0].equalsIgnoreCase(ID_ESTACION) && !partes[0].equalsIgnoreCase("ALL")) {
-                                continue; // Es para otra estación
+                                continue; 
                             }
                             accion = partes[1];
                             if (partes.length >= 3) op = partes[2];
@@ -160,7 +156,6 @@ public class WM_WS_E {
         });
         kafkaThread.start();
 
-        // 4. PUENTE TCP CON EL MONITOR (Con reconexión automática si el monitor se reinicia)
         while (true) {
             try (Socket socket = new Socket(monitorIp, monitorPort);
                  BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));

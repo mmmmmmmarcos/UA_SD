@@ -15,7 +15,7 @@ public class HiloServidor extends Thread {
              DataOutputStream out = new DataOutputStream(skCliente.getOutputStream())) {
 
             while (true) {
-                String trama = in.readUTF(); // Emparejado con el writeUTF de WM_WS_M
+                String trama = in.readUTF(); 
 
                 int stx = trama.indexOf("<STX>");
                 int etx = trama.indexOf("<ETX>");
@@ -24,7 +24,6 @@ public class HiloServidor extends Thread {
                     String payload = trama.substring(stx + 5, etx);
                     String lrcRecibidoStr = trama.substring(etx + 5);
 
-                    // Cálculo XOR byte a byte para verificar integridad (LRC)
                     byte lrcCalculado = 0;
                     for (byte b : payload.getBytes()) {
                         lrcCalculado ^= b;
@@ -36,7 +35,6 @@ public class HiloServidor extends Thread {
                         continue;
                     }
 
-                    // Parseo de protocolo: REGISTER#WS-01#ZonaNorte o ALERT#WS-01#Estado
                     String[] partes = payload.split("#");
                     String operacion = partes[0];
                     if (partes.length >= 2) {
@@ -46,7 +44,7 @@ public class HiloServidor extends Thread {
                     if ("REGISTER".equalsIgnoreCase(operacion)) {
                         String ubicacion = (partes.length >= 3) ? partes[2] : "Desconocida";
                         GestorBD.registrarEstacion(idEstacionAsociada, ubicacion, "AVAILABLE");
-                        ServidorConcurrente.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Disponible");
+                        WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Disponible");
                         System.out.println("[WM_CENTRAL] Estación autenticada y registrada: " + idEstacionAsociada + " (" + ubicacion + ") [LRC OK]");
                         out.writeUTF("ACK#REGISTERED");
                     } else if ("ALERT".equalsIgnoreCase(operacion)) {
@@ -60,7 +58,7 @@ public class HiloServidor extends Thread {
                         }
 
                         GestorBD.actualizarEstadoEstacion(idEstacionAsociada, estadoBD);
-                        ServidorConcurrente.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#" + estadoReportado);
+                        WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#" + estadoReportado);
                         System.out.println("[WM_CENTRAL] Telemetría [" + idEstacionAsociada + "]: " + estadoReportado + " -> SQLite [" + estadoBD + "] [LRC OK]");
                         out.writeUTF("ACK#" + estadoBD);
                     } else {
@@ -73,7 +71,7 @@ public class HiloServidor extends Thread {
         } catch (Exception e) {
             System.err.println("[WM_CENTRAL] Monitor de " + idEstacionAsociada + " desconectado abruptamente (" + e.getMessage() + ").");
             GestorBD.actualizarEstadoEstacion(idEstacionAsociada, "DISCONNECTED");
-            ServidorConcurrente.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Desconectada");
+            WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Desconectada");
         }
     }
 }
