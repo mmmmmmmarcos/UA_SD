@@ -1,6 +1,13 @@
-FROM eclipse-temurin:17-jdk
+FROM openjdk:11-jdk-slim
 WORKDIR /app
+
+# Copiamos librerías (Kafka, SQLite)
 COPY lib/ ./lib/
-COPY src/ ./src/
-COPY peticiones.txt ./peticiones.txt
-RUN javac -encoding ISO-8859-1 -cp ".:lib/*" src/*.java
+
+# Copiamos la nueva estructura de directorios
+COPY WM_Central/ ./WM_Central/
+COPY WM_WS/ ./WM_WS/
+COPY WM_FO/ ./WM_FO/
+
+# Compilamos indicando el classpath
+RUN javac -cp ".:lib/*" WM_Central/*.java WM_WS/*.java WM_FO/*.java

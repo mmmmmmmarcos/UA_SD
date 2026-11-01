@@ -1,0 +1,34 @@
+
+3 me da el error 'database is locked' en sqlite porque tengo al consumidor de kafka y a los hilos de los sockets haciendo inserts a la vez. si le casco un synchronized al método del GestorBD me vale o hay algo más óptimo?
+4en sqlite cómo era la sintaxis para hacer un insert pero que si la clave primaria ya existe me haga un update del estado? es con ON CONFLICT DO UPDATE o algo así no?
+5cada vez que corto el servidor con ctrl+c y lo vuelvo a lanzar me peta con 'address already in use'. cómo hago para que java suelte el puerto al instante al matar el proceso? metiendo el socket en un try with resources?
+6si el monitor le está mandando 'STATUS' por el printwriter al motor cada segundo, y de repente cierro la terminal del motor, ¿qué devuelve el readLine() del monitor, un null o salta excepción directamente? para saber cómo cazar la caíd
+7me llegan las tramas por los sockets envueltas con los caracteres ASCII 2 (STX) y 3 (ETX). si le hago un substring pillando los indexOf de (char)2 y (char)3 saco el texto limpio del medio a lo bruto y a correr, verdad?
+8estoy levantando 4 hilos a pelo con new Thread(() -> {...}).start() en el main de mi WM_WS_E. para una práctica de clase va que chuta o debería montarme un ExecutorService obligatoriamente?
+9tengo un hilo leyendo el teclado y otro llevando el temporizador del riego. si declaro la variable 'boolean hayFuga' como 'volatile' sirve para que los dos la lean de la RAM al momento sin liarla con locks raros?
+10estoy leyendo el peticiones.txt línea a línea. para esperar 4 segundos entre que mando una y leo la siguiente, le meto un Thread.sleep(4000) dentro del while directamente y ya está, no?
+11le estoy haciendo un split('#') a la string que leo del fichero ('WS-01#5') para sacar el ID y los segundos. si me llega la orden 'STOP' a secas sin la almohadilla, el split me va a dar un array out of bounds si pillo la posición 1, no? le pongo un if de length == 2 antes y au?
+12 si quiero que todos mis nodos de la central reciban los mensajes del topic de kafka a la vez (en plan broadcast) para actualizar las pantallas, con meterle un UUID random al group.id de cada uno lo tengo arreglado y no me balancea la carga, no?"
+13oye el javac de windows me está escupiendo errores de compilación de sintaxis donde tengo tildes o ñ en los sysos de java. cómo le paso el parámetro para obligarle a leer los .java en utf-8?
+"va mas o menos en la terminal, ambas sale asi cuando le das a algo en vez d todo lo q tendria q salir... en el html si q sale en todos, pq la consola no lo pilla bien?"
+Marcos
+te envio el documento de la practica, parte el trabajo para mi y para mi compañero
+como hago para que no me de error cuando compilo las tildes
+tengo un problema con kafka en el contenedor de aws. cuando intento conectar el motor y el monitor desde local me dice connection refused a localhost. q ip le pongo en el yaml para que se entere de que no esta en local?
+al reiniciar la central, sqlite se queda con los estados q habia antes (Available, etc) pero los monitores aun no han reconectado. como hago un update masivo pa q al arrancar se pongan todos en DISCONNECTED por defecto?
+estoy con el HiloServidor.java y el WM_WS_M.java intentando meter el LRC con XOR. Si el monitor me envia el string en texto plano con el dataOutputStream, como le hago el XOR en el servidor pa validar q no ha perdido bytes?
+el docker compose me falla pq el monitor y el operario se intentan conectar a la central y a kafka antes de q esten listos. m recomiendas meterle un sleep en el command del yaml o hay alguna forma d q espere al ping?
+duda d concurrencia: en WM_WS_E tengo q leer de kafka, llevar la cuenta de los segundos d riego y leer el teclado pa simular fallos. me peta si toco la variable 'regando' desde dos sitios. le pongo volatile o tiro d synchronized?
+como leo dsd javascript (en el front) la respuesta de la central pa sacar solo la ultima orden? es q m escupe tooodo el txt con las ordenes pasadas y se me desborda la tabla. q me guardo el ultimo ID?
+ayuda con css/js: el profe kiere q la cajita d la estacion parpadee en verde si esta Watering. como le quito y le pongo la clase d css con un timer pa q haga el efecto sin bloquear la web?
+la hemos liado un poco, la rubrica pide carpetas separadas (WM_Central, WM_WS, WM_FO) y lo teniamos todo junto. si lo separo asi, como pongo el javac en el dockerfile pa q recompile to'd d una?
+el operario lee del fichero peticiones.txt pero me las manda todas de golpe. como hago el sleep d 4 segundos en java entre linea y linea pa q cumpla la espera q pide el enunciado?
+como detecto en el monitor (WM_WS_M) q el motor (WM_WS_E) se ha apagado del tiron haciendo ctrl c? se me queda el socket colgao y no me avisa a la central hay q ponerle timeout?
+vale ahora se conectan bien pero no imprime lo que quiero. mira imprime esto... q tengo q tocar en el codigo para q vuelva a decir cuando riega, cuando para y la fuga?
+tengo esto en la terminal de aws al levantar el docker de kafka, q parametro le pongo en el comando para q limite la memoria y no se caiga la instancia?
+me sale connection refused en los logs del monitor cuando hago cosas, puede ser q arranque antes q la central y por eso no la encuentra? como le pongo un delay en el compose?
+te paso mi docker-compose pq me da fallo al levantar, ves algun error de espacios o alguna ip q este mal puesta?
+ahora funciona pero cuando mi compa se conecta m salen estos errores de desconexion. si yo le doy a la web m funciona a mi pero a el le peta. q puede ser?
+mi compañer esta en su casa y yo en la mia, asi q descarto q sea problema del router
+quiero q cuando apague el contenedor se capture la excepcion pq ahora se cierra y no sale nada en terminal. es muy dificil hacer q salte un print mio? q parte dl codigo necesitas q t pase para mirarlo?
+m sale esto cuando intento regar en otra zona (ws-02). el mensaje llega por kafka pero el motor no riega, q parametro tengo q cambiarle al motor para probar las otras zonas?
