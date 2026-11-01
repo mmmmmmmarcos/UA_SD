@@ -1,7 +1,7 @@
 import java.sql.*;
 
 public class GestorBD {
-    private static final String URL = "jdbc:sqlite:riego_sd.db";
+    private static final String URL = "jdbc:sqlite:db/riego_sd.db";
 
     public static synchronized void inicializarBD() {
         try {
