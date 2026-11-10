@@ -1,86 +1,169 @@
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 
+/**
+ * WM_WS_M: Monitor de una Watering Station.
+ *
+ * Uso: java WM_WS_M <puerto_para_engine> <ip_central:puerto> <id_WS> [ubicacion]
+ *   - Si se indica ubicacion, primero registra (da de alta) la WS en Central y luego se autentica.
+ *   - Si no se indica, solo se autentica: Central la deniega si la WS no esta registrada.
+ *
+ * Hilo "central": conexion por sockets con WM_Central. Envia cada segundo HEALTH con la salud del engine.
+ *                 Si Central cae, reintenta cada 3 s y avisa al engine (SIN_CENTRAL).
+ * Hilo "engine":  servidor de sockets para el engine. Cada segundo le envia STATUS y espera OK/KO.
+ *                 Si no responde (2.5 s) o responde KO -> se notifica averia/fuga a Central.
+ */
 public class WM_WS_M {
-    private static String idEstacion = "WS-01";
-    private static String ubicacion = "ZonaNorte";
-    private static String estadoAnterior = "Desconectada";
+    static final String RST = "\u001B[0m", ROJO = "\u001B[31m", VERDE = "\u001B[32m",
+            AMARILLO = "\u001B[33m", CIAN = "\u001B[36m", GRIS = "\u001B[90m", NEGRITA = "\u001B[1m";
+
+    static String idWS;
+    static String ubicacion;
+    static volatile String saludEngine = "ENGINE_KO";  // OK_IDLE | OK_REGANDO | FUGA | ENGINE_KO
+    static volatile String estadoCentral = "SIN_CENTRAL"; // ACTIVA | BLOQUEADA | SIN_CENTRAL
 
     public static void main(String[] args) {
-        if (args.length < 2) {
-            System.out.println("Uso: java WM_WS_M <IP_Central:Puerto> <Puerto_Escucha_Motor> [ID_WS] [Ubicacion]");
-            return;
+        if (args.length < 3) {
+            System.out.println("Uso: java WM_WS_M <puerto_para_engine> <ip_central:puerto> <id_WS> [ubicacion]");
+            System.exit(1);
         }
+        int puertoEngine = Integer.parseInt(args[0]);
+        String[] hp = args[1].split(":");
+        String hostCentral = hp[0];
+        int puertoCentral = Integer.parseInt(hp[1]);
+        idWS = args[2].trim();
+        ubicacion = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)).trim() : null;
 
-        String[] centralParams = args[0].split(":");
-        String centralIp = centralParams[0];
-        int centralPort = Integer.parseInt(centralParams[1]);
-        int puertoEscucha = Integer.parseInt(args[1]);
-        if (args.length >= 3) idEstacion = args[2];
-        if (args.length >= 4) ubicacion = args[3];
+        System.out.println(NEGRITA + CIAN + "==============================================");
+        System.out.println("  WM_WS_M  -  MONITOR de la estacion " + idWS);
+        System.out.println("  Central: " + hostCentral + ":" + puertoCentral + "  |  Puerto engine: " + puertoEngine);
+        System.out.println("==============================================" + RST);
 
-        try (Socket socketCentral = new Socket(centralIp, centralPort);
-             DataInputStream inCentral = new DataInputStream(socketCentral.getInputStream());
-             DataOutputStream outCentral = new DataOutputStream(socketCentral.getOutputStream());
-             ServerSocket serverSocket = new ServerSocket(puertoEscucha)) {
+        Thread tEngine = new Thread(() -> servidorEngine(puertoEngine), "engine");
+        tEngine.setDaemon(true);
+        tEngine.start();
 
-            System.out.println("[MONITOR " + idEstacion + "] Enlazado a WM_Central " + centralIp + ":" + centralPort);
+        bucleCentral(hostCentral, puertoCentral);
+    }
 
-            enviarTrama(outCentral, "REGISTER#" + idEstacion + "#" + ubicacion);
-            System.out.println("[MONITOR " + idEstacion + "] Autenticación Central: " + inCentral.readUTF());
+    // ------------------------------------------------------------------ conexion con Central
 
-            while (true) {
-                System.out.println("[MONITOR " + idEstacion + "] Escuchando puerto " + puertoEscucha + " para conexión de WM_WS_E...");
-                try (Socket socketMotor = serverSocket.accept();
-                     BufferedReader inMotor = new BufferedReader(new InputStreamReader(socketMotor.getInputStream()));
-                     PrintWriter outMotor = new PrintWriter(socketMotor.getOutputStream(), true)) {
+    private static void bucleCentral(String host, int puerto) {
+        boolean avisado = false;
+        while (true) {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(host, puerto), 3000);
+                s.setSoTimeout(5000);
+                Protocolo p = new Protocolo(s.getInputStream(), s.getOutputStream());
 
-                    socketMotor.setSoTimeout(2500); 
-                    System.out.println("[MONITOR " + idEstacion + "] Engine conectado. Iniciando supervisión (1s).");
-
-                    while (true) {
-                        outMotor.println("STATUS");
-                        String respuestaMotor = inMotor.readLine();
-
-                        if (respuestaMotor == null) {
-                            throw new IOException("Engine cerró el socket abruptamente (Crash)");
-                        }
-
-                        String estadoActual = "Disponible";
-                        if (respuestaMotor.equals("KO")) {
-                            estadoActual = "Fuga";
-                        } else if (respuestaMotor.startsWith("REGANDO")) {
-                            estadoActual = "Regando";
-                        }
-
-                        if (!estadoActual.equals(estadoAnterior)) {
-                            enviarTrama(outCentral, "ALERT#" + idEstacion + "#" + estadoActual);
-                            System.out.println("[MONITOR " + idEstacion + "] Notificado estado '" + estadoActual + "' -> Central: " + inCentral.readUTF());
-                            estadoAnterior = estadoActual;
-                        }
-
-                        Thread.sleep(1000);
-                    }
-                } catch (Exception eMotor) {
-                    System.err.println("[MONITOR " + idEstacion + "] ALERTA: Fallo/Caída en WM_WS_E (" + eMotor.getMessage() + ")");
-                    if (!"Averiado".equals(estadoAnterior)) {
-                        enviarTrama(outCentral, "ALERT#" + idEstacion + "#Averiado");
-                        System.out.println("[MONITOR " + idEstacion + "] Estación marcada como AVERIADA en Central: " + inCentral.readUTF());
-                        estadoAnterior = "Averiado";
-                    }
+                if (ubicacion != null) {
+                    String r = p.peticion("REGISTER#" + idWS + "#" + ubicacion);
+                    log(r.startsWith("OK") ? VERDE + "Registro en WM_Central: " + idWS + " (" + ubicacion + ") OK"
+                            : ROJO + "Registro rechazado: " + r);
                 }
+                String r = p.peticion("AUTH#" + idWS);
+                if (!r.startsWith("OK")) {
+                    log(ROJO + NEGRITA + "AUTENTICACION DENEGADA por WM_Central: " + campo(r, 1));
+                    estadoCentral = "SIN_CENTRAL";
+                    System.exit(2);
+                }
+                cambiarEstadoCentral(campo(r, 1));
+                log(VERDE + NEGRITA + "Autenticado en WM_Central como " + idWS + RST);
+                avisado = false;
+
+                String saludEnviada = "";
+                while (true) {
+                    String salud = saludEngine;
+                    r = p.peticion("HEALTH#" + idWS + "#" + salud);
+                    if (!r.startsWith("OK")) throw new IOException("Central rechazo el latido: " + r);
+                    cambiarEstadoCentral(campo(r, 1));
+                    if (!salud.equals(saludEnviada)) {
+                        log("Estado notificado a Central: " + describir(salud));
+                        saludEnviada = salud;
+                    }
+                    Thread.sleep(1000);
+                }
+            } catch (IOException e) {
+                estadoCentral = "SIN_CENTRAL";
+                if (!avisado) {
+                    log(ROJO + NEGRITA + "Imposible conectar con WM_Central (" + e.getMessage()
+                            + "). Reintentando cada 3 s..." + RST);
+                    avisado = true;
+                }
+            } catch (InterruptedException e) {
+                return;
             }
-        } catch (Exception e) {
-            System.err.println("\n[MONITOR " + idEstacion + "] Imposible conectar con WM_Central: " + e.getMessage());
+            try { Thread.sleep(3000); } catch (InterruptedException e) { return; }
         }
     }
 
-    private static void enviarTrama(DataOutputStream out, String payload) throws IOException {
-        String base = "<STX>" + payload + "<ETX>";
-        byte lrc = 0;
-        for (byte b : payload.getBytes()) {
-            lrc ^= b;
+    private static void cambiarEstadoCentral(String nuevo) {
+        if (!nuevo.equals(estadoCentral)) {
+            estadoCentral = nuevo;
+            if ("BLOQUEADA".equals(nuevo)) log(AMARILLO + NEGRITA + "WM_Central ha BLOQUEADO la estacion (Out of Service)");
+            else if ("ACTIVA".equals(nuevo)) log(VERDE + "Estacion ACTIVA en WM_Central");
         }
-        out.writeUTF(base + lrc);
+    }
+
+    // ------------------------------------------------------------------ servidor para el engine
+
+    private static void servidorEngine(int puerto) {
+        try (ServerSocket ss = new ServerSocket()) {
+            ss.setReuseAddress(true);
+            ss.bind(new InetSocketAddress(puerto));
+            log("Esperando conexion del engine (WM_WS_E) en el puerto " + puerto + "...");
+            while (true) {
+                try (Socket s = ss.accept()) {
+                    s.setSoTimeout(2500);
+                    Protocolo p = new Protocolo(s.getInputStream(), s.getOutputStream());
+                    log(VERDE + "Engine conectado desde " + s.getInetAddress().getHostAddress() + ". Comprobando su salud cada segundo.");
+                    while (true) {
+                        String r = p.peticion("STATUS#" + idWS + "#" + estadoCentral);
+                        String nueva;
+                        if (r.startsWith("OK#REGANDO")) nueva = "OK_REGANDO";
+                        else if (r.startsWith("OK")) nueva = "OK_IDLE";
+                        else nueva = "FUGA";
+                        if (!nueva.equals(saludEngine)) {
+                            if ("FUGA".equals(nueva)) log(ROJO + NEGRITA + "El engine responde KO: FUGA detectada -> aviso a Central");
+                            else if ("FUGA".equals(saludEngine) || "ENGINE_KO".equals(saludEngine)) log(VERDE + "Engine OK");
+                            saludEngine = nueva;
+                        }
+                        Thread.sleep(1000);
+                    }
+                } catch (IOException e) {
+                    saludEngine = "ENGINE_KO";
+                    log(ROJO + NEGRITA + "ALERTA: el engine no responde (" + e.getMessage()
+                            + "). Estacion AVERIADA -> aviso a Central. Esperando reconexion...");
+                }
+            }
+        } catch (IOException e) {
+            log(ROJO + "No se puede abrir el puerto " + puerto + " para el engine: " + e.getMessage());
+            System.exit(3);
+        } catch (InterruptedException ignored) { }
+    }
+
+    // ------------------------------------------------------------------ utilidades
+
+    private static String describir(String salud) {
+        switch (salud) {
+            case "OK_IDLE": return VERDE + "DISPONIBLE (engine OK)" + RST;
+            case "OK_REGANDO": return VERDE + "REGANDO" + RST;
+            case "FUGA": return ROJO + "FUGA" + RST;
+            default: return ROJO + "AVERIADA (engine sin respuesta)" + RST;
+        }
+    }
+
+    private static String campo(String s, int i) {
+        String[] c = s.split("#", -1);
+        return c.length > i ? c[i] : "";
+    }
+
+    static synchronized void log(String msg) {
+        System.out.println(GRIS + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")) + RST
+                + " [MONITOR " + idWS + "] " + msg + RST);
     }
 }

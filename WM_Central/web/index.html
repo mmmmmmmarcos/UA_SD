@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WM_Central · Panel</title>
+<style>
+  :root {
+    --bg: #0f1720; --panel: #17212c; --borde: #263445; --texto: #e6edf3; --suave: #8b9bb0;
+    --verde: #1f9d55; --verde2: #2ecc71; --rojo: #d64545; --naranja: #e8891c; --gris: #5b6675; --azul: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--texto); }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
+           padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--borde); }
+  header h1 { margin: 0; font-size: 1.25rem; letter-spacing: .3px; }
+  header h1 span { color: var(--suave); font-weight: 400; font-size: .95rem; }
+  .chip { padding: 4px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+  .ok { background: rgba(46,204,113,.15); color: var(--verde2); }
+  .ko { background: rgba(214,69,69,.18); color: #ff8080; }
+  main { padding: 18px 20px; display: grid; gap: 18px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  section h2 { margin: 0 0 12px; font-size: .95rem; color: var(--suave); text-transform: uppercase; letter-spacing: .6px; }
+  .rejilla { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .ws { border-radius: 10px; padding: 12px 14px; color: #fff; min-height: 140px; display: flex; flex-direction: column; gap: 4px; }
+  .ws .id { font-size: 1.3rem; font-weight: 700; }
+  .ws .ubi { opacity: .9; font-size: .9rem; }
+  .ws .est { margin-top: 6px; font-weight: 700; letter-spacing: .5px; }
+  .ws .det { font-size: .85rem; opacity: .95; }
+  .ws .tot { margin-top: auto; font-size: .8rem; opacity: .85; }
+  .AVAILABLE { background: var(--verde); }
+  .WATERING { background: var(--verde2); animation: parpadeo 1s infinite; }
+  .LEAK { background: var(--rojo); }
+  .OUT_OF_SERVICE { background: var(--naranja); }
+  .DISCONNECTED { background: var(--gris); }
+  @keyframes parpadeo { 50% { background: #136b39; } }
+  .controles { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  select, input { background: #0e151d; color: var(--texto); border: 1px solid var(--borde); border-radius: 6px; padding: 7px 9px; font-size: .9rem; }
+  input[type=number] { width: 90px; }
+  button { border: 0; border-radius: 6px; padding: 8px 12px; font-weight: 600; cursor: pointer; color: #fff; font-size: .9rem; }
+  .b-regar { background: var(--verde); } .b-bloq { background: var(--naranja); } .b-act { background: var(--azul); }
+  .b-sec { background: #34465a; }
+  #respuesta { font-size: .85rem; color: var(--suave); min-height: 1.2em; }
+  #log { font-family: Consolas, monospace; font-size: .78rem; height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+         background: #0b1118; border-radius: 6px; padding: 8px; color: #c9d4e0; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--borde); }
+  th { color: var(--suave); font-weight: 600; }
+  .leyenda { display: flex; flex-wrap: wrap; gap: 10px; font-size: .78rem; color: var(--suave); margin-top: 10px; }
+  .leyenda i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+  .tabla-wrap { overflow-x: auto; }
+  .ops { display: flex; flex-wrap: wrap; gap: 10px; }
+  .op { border: 1px solid var(--borde); border-radius: 8px; padding: 8px 12px; min-width: 150px; background: #0e151d; }
+  .op b { font-size: 1.05rem; }
+  .op .linea { font-size: .8rem; color: var(--suave); margin-top: 3px; }
+  .punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .on { background: var(--verde2); } .off { background: var(--gris); }
+  .vacio { color: var(--suave); font-size: .85rem; }
+  #resumen { color: var(--suave); font-size: .85rem; margin-right: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WM_Central <span>· WaterManagement · Panel de monitorización y control</span></h1>
+  <div>
+    <span id="resumen"></span>
+    <span id="central" class="chip ko">Conectando…</span>
+    <span id="kafka" class="chip ko">Kafka</span>
+  </div>
+</header>
+
+<main>
+  <div style="display:grid; gap:18px; min-width:0">
+    <section>
+      <h2>Estaciones de riego</h2>
+      <div id="rejilla" class="rejilla"></div>
+      <div class="leyenda">
+        <span><i style="background:var(--verde)"></i>Disponible</span>
+        <span><i style="background:var(--verde2)"></i>Regando (parpadea)</span>
+        <span><i style="background:var(--rojo)"></i>Fuga / Averiada</span>
+        <span><i style="background:var(--naranja)"></i>Out of Service</span>
+        <span><i style="background:var(--gris)"></i>Desconectada</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Operarios (FO)</h2>
+      <div id="operarios" class="ops"></div>
+    </section>
+
+    <section>
+      <h2>Órdenes de Central</h2>
+      <div class="controles">
+        <select id="selWs"><option value="ALL">TODAS las WS</option></select>
+        <input id="seg" type="number" min="1" max="3600" value="10" title="Segundos de riego"> s
+        <button class="b-regar" onclick="orden('REGAR')">Iniciar riego</button>
+        <button class="b-bloq" onclick="orden('BLOQUEAR')">Bloquear</button>
+        <button class="b-act" onclick="orden('ACTIVAR')">Activar</button>
+      </div>
+      <div class="controles">
+        <input id="opId" placeholder="FO-06" size="8">
+        <input id="opNombre" placeholder="Nombre del operario">
+        <button class="b-sec" onclick="altaOperario()">Alta operario</button>
+      </div>
+      <div id="respuesta"></div>
+    </section>
+
+    <section>
+      <h2>Últimos riegos (SQLite)</h2>
+      <div class="tabla-wrap">
+        <table>
+          <thead><tr><th>Fecha (UTC)</th><th>WS</th><th>Operario</th><th>Seg.</th><th>Litros</th><th>Motivo</th></tr></thead>
+          <tbody id="riegos"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Registro de eventos</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+  const NOMBRES = { AVAILABLE: "DISPONIBLE", WATERING: "REGANDO", LEAK: "FUGA / AVERIADA",
+                    OUT_OF_SERVICE: "OUT OF SERVICE", DISCONNECTED: "DESCONECTADA" };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  let wsConocidas = "";
+
+  async function refrescar() {
+    try {
+      const r = await fetch("api/estado", { cache: "no-store" });
+      const d = await r.json();
+      chip("central", true, "Central OK");
+      chip("kafka", d.kafka, d.kafka ? "Kafka OK" : "Kafka SIN CONEXIÓN");
+
+      document.getElementById("rejilla").innerHTML = d.estaciones.map(e => `
+        <div class="ws ${e.estado}">
+          <div class="id">${esc(e.id)}</div>
+          <div class="ubi">📍 ${esc(e.ubicacion)}</div>
+          <div class="est">${NOMBRES[e.estado] || e.estado}</div>
+          <div class="det">${e.estado === "WATERING"
+              ? `💧 ${e.caudal} L/min · ${e.volumen} L<br>⏱ ${e.segundos}/${e.objetivo} s · 👷 ${esc(e.operario)}`
+              : esc(e.detalle)}</div>
+          <div class="tot">Agua suministrada: ${e.total} L</div>
+        </div>`).join("");
+
+      const conectadas = d.estaciones.filter(e => e.estado !== "DISCONNECTED").length;
+      const opsOn = d.operarios.filter(o => o.conectado).length;
+      document.getElementById("resumen").textContent =
+        `WS conectadas: ${conectadas}/${d.estaciones.length} · Operarios conectados: ${opsOn}`;
+
+      document.getElementById("operarios").innerHTML = d.operarios.length === 0
+        ? '<span class="vacio">Ningún operario se ha conectado todavía.</span>'
+        : d.operarios.map(o => `
+          <div class="op">
+            <b><span class="punto ${o.conectado ? "on" : "off"}"></span>${esc(o.id)}</b>
+            <div class="linea">${o.conectado ? "Conectado" : `Desconectado (hace ${o.hace} s)`}</div>
+            <div class="linea">${o.riego ? `💧 Regando en ${esc(o.riego)}` : "Sin riego activo"}</div>
+          </div>`).join("");
+
+      const ids = d.estaciones.map(e => e.id).join(",");
+      if (ids !== wsConocidas) {
+        wsConocidas = ids;
+        const sel = document.getElementById("selWs"), actual = sel.value;
+        sel.innerHTML = '<option value="ALL">TODAS las WS</option>' +
+          d.estaciones.map(e => `<option>${esc(e.id)}</option>`).join("");
+        sel.value = actual;
+      }
+
+      document.getElementById("log").textContent = d.log.join("\n");
+      document.getElementById("riegos").innerHTML = d.riegos.map(f =>
+        `<tr>${f.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+    } catch (e) {
+      chip("central", false, "Imposible conectar con WM_Central");
+      chip("kafka", false, "Kafka ?");
+    }
+  }
+
+  function chip(id, ok, texto) {
+    const el = document.getElementById(id);
+    el.className = "chip " + (ok ? "ok" : "ko");
+    el.textContent = texto;
+  }
+
+  async function orden(accion) {
+    const ws = document.getElementById("selWs").value;
+    const seg = document.getElementById("seg").value;
+    await llamar(`api/orden?accion=${accion}&ws=${encodeURIComponent(ws)}&segundos=${seg}`);
+  }
+
+  async function altaOperario() {
+    const id = document.getElementById("opId").value.trim();
+    const nombre = document.getElementById("opNombre").value.trim();
+    if (!id) return;
+    await llamar(`api/operario?id=${encodeURIComponent(id)}&nombre=${encodeURIComponent(nombre || id)}`);
+  }
+
+  async function llamar(url) {
+    const out = document.getElementById("respuesta");
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      out.textContent = await r.text();
+    } catch (e) {
+      out.textContent = "Imposible conectar con WM_Central";
+    }
+    refrescar();
+  }
+
+  refrescar();
+  setInterval(refrescar, 1000);
+</script>
+</body>
+</html>

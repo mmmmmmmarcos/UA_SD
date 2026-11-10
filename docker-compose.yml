@@ -1,42 +1,43 @@
-version: '3.8'
+# ---------------------------------------------------------------------------
+# PRUEBAS EN CASA: levanta la "parte cloud" (Kafka + WM_Central + SQLite) en local.
+# En la correccion esta parte esta en Railway; este fichero es solo para probar.
+#
+#   docker compose up -d --build
+#   Panel web:            http://localhost:8000
+#   Central (monitores):  host.docker.internal:8080
+#   Kafka (WS y FO):      host.docker.internal:9092
+# ---------------------------------------------------------------------------
 services:
+  kafka:
+    build:
+      context: .
+      dockerfile: kafka/Dockerfile
+    container_name: cloud-kafka
+    environment:
+      KAFKA_INTERNAL_HOST: kafka
+      KAFKA_EXTERNAL_HOST: host.docker.internal
+      KAFKA_EXTERNAL_PORT: "9092"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka-datos:/var/lib/kafka/data
+
   central:
     build: .
-    container_name: wm_central
+    container_name: cloud-central
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKER: kafka:29092
+      PUERTO_SOCKET: "8080"
+      PORT: "8000"
+      DB_PATH: /data/riego_sd.db
     ports:
-      - "8081:8080"
-      - "8082:8082"
-    command: java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Dorg.slf4j.simpleLogger.log.org.apache.kafka.clients.NetworkClient=error -cp "lib/*:WM_Central" WM_Central 8080 98.93.69.19:9092
-
-  frontend:
-    image: nginx:alpine
-    container_name: wm_frontend
-    ports:
-      - "80:80"
+      - "8080:8080"
+      - "8000:8000"
     volumes:
-      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - central-datos:/data
 
-  monitor:
-    build: .
-    container_name: wm_monitor
-    depends_on:
-      - central
-    ports:
-      - "5000:5000"
-    command: sh -c "sleep 15 && java -cp 'lib/*:WM_WS' WM_WS_M central:8080 5000 WS-01 ZonaNorte"
-
-  engine:
-    build: .
-    container_name: wm_engine
-    depends_on:
-      - monitor
-    stdin_open: true
-    tty: true
-    command: sh -c "sleep 20 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Dorg.slf4j.simpleLogger.log.org.apache.kafka.clients.NetworkClient=error -cp 'lib/*:WM_WS' WM_WS_E 98.93.69.19:9092 monitor:5000 WS-01"
-
-  operario:
-    build: .
-    container_name: wm_fo
-    stdin_open: true
-    tty: true
-    command: sh -c "sleep 25 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Dorg.slf4j.simpleLogger.log.org.apache.kafka.clients.NetworkClient=error -cp 'lib/*:WM_FO' WM_FO 98.93.69.19:9092 FO-01 MANUAL"
+volumes:
+  kafka-datos:
+  central-datos:

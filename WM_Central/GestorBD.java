@@ -1,103 +1,132 @@
+import java.io.File;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * Acceso a la base de datos SQLite de WM_Central.
+ * Una unica conexion compartida y todos los metodos synchronized: SQLite solo admite
+ * un escritor a la vez, asi evitamos el error "database is locked".
+ */
 public class GestorBD {
-    private static final String URL = "jdbc:sqlite:riego_sd.db";
+    private final Connection conn;
 
-    public static synchronized void inicializarBD() {
-        try {
-            Class.forName("org.sqlite.JDBC");
-            try (Connection conn = DriverManager.getConnection(URL);
-                 Statement stmt = conn.createStatement()) {
+    public GestorBD(String ruta) throws SQLException {
+        File f = new File(ruta).getAbsoluteFile();
+        if (f.getParentFile() != null) f.getParentFile().mkdirs();
+        conn = DriverManager.getConnection("jdbc:sqlite:" + f.getPath());
 
-                stmt.execute("CREATE TABLE IF NOT EXISTS estaciones (id TEXT PRIMARY KEY, ubicacion TEXT DEFAULT 'ZonaNorte', estado TEXT NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY, nombre TEXT NOT NULL)");
-                stmt.execute("CREATE TABLE IF NOT EXISTS historico_riegos (id INTEGER PRIMARY KEY AUTOINCREMENT, id_estacion TEXT, duracion INTEGER, litros REAL, operario TEXT DEFAULT 'FO-01', fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TABLE IF NOT EXISTS estaciones (" +
+                    "id TEXT PRIMARY KEY, ubicacion TEXT NOT NULL, estado TEXT NOT NULL DEFAULT 'DISCONNECTED')");
+            try { st.execute("ALTER TABLE estaciones ADD COLUMN bloqueada INTEGER NOT NULL DEFAULT 0"); }
+            catch (SQLException yaExiste) { /* columna ya creada en un arranque anterior */ }
 
-                try { stmt.execute("ALTER TABLE estaciones ADD COLUMN ubicacion TEXT DEFAULT 'ParqueCentral'"); } catch (SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE historico_riegos ADD COLUMN operario TEXT DEFAULT 'FO-01'"); } catch (SQLException ignored) {}
+            st.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY, nombre TEXT NOT NULL)");
+            st.execute("CREATE TABLE IF NOT EXISTS riegos (" +
+                    "id_riego TEXT PRIMARY KEY, id_estacion TEXT NOT NULL, operario TEXT, " +
+                    "segundos INTEGER, litros REAL, motivo TEXT, fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
 
-                stmt.execute("INSERT OR IGNORE INTO estaciones (id, ubicacion, estado) VALUES ('WS-01', 'ZonaNorte', 'DISCONNECTED')");
-                stmt.execute("INSERT OR IGNORE INTO estaciones (id, ubicacion, estado) VALUES ('WS-02', 'ParqueCentral', 'DISCONNECTED')");
-                stmt.execute("INSERT OR IGNORE INTO estaciones (id, ubicacion, estado) VALUES ('WS-03', 'JardinSur', 'DISCONNECTED')");
-                stmt.execute("INSERT OR IGNORE INTO operarios (id, nombre) VALUES ('FO-01', 'Operario Campo 1')");
-                stmt.execute("INSERT OR IGNORE INTO operarios (id, nombre) VALUES ('FO-02', 'Operario Campo 2')");
+            // Datos iniciales (solo se insertan la primera vez)
+            st.execute("INSERT OR IGNORE INTO estaciones (id, ubicacion) VALUES " +
+                    "('WS-01','Parque Norte'),('WS-02','Jardin Central'),('WS-03','Parque Sur')");
+            st.execute("INSERT OR IGNORE INTO operarios (id, nombre) VALUES " +
+                    "('FO-01','Operario 1'),('FO-02','Operario 2'),('FO-03','Operario 3')," +
+                    "('FO-04','Operario 4'),('FO-05','Operario 5')");
 
-                stmt.execute("UPDATE estaciones SET estado = 'DISCONNECTED'");
+            // Al (re)arrancar no conocemos el estado real de ninguna WS hasta que su monitor conecte
+            st.execute("UPDATE estaciones SET estado = 'DISCONNECTED'");
+        }
+    }
 
-                System.out.println("\n=== [SQLITE] ESTACIONES REGISTRADAS EN WM_CENTRAL AL INICIO ===");
-                try (ResultSet rs = stmt.executeQuery("SELECT id, ubicacion, estado FROM estaciones")) {
-                    while (rs.next()) {
-                        System.out.println(" -> Estación: " + rs.getString("id") +
-                                           " | Ubicación: " + rs.getString("ubicacion") +
-                                           " | Estado inicial: " + rs.getString("estado") + " (Esperando conexión de Monitor)");
-                    }
+    /** Devuelve [id, ubicacion, bloqueada(0/1), litrosTotales] de cada WS registrada. */
+    public synchronized List<String[]> cargarEstaciones() throws SQLException {
+        List<String[]> lista = new ArrayList<>();
+        String sql = "SELECT e.id, e.ubicacion, e.bloqueada, " +
+                "COALESCE((SELECT SUM(litros) FROM riegos r WHERE r.id_estacion = e.id), 0) AS total " +
+                "FROM estaciones e ORDER BY e.id";
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                lista.add(new String[]{rs.getString(1), rs.getString(2),
+                        String.valueOf(rs.getInt(3)), String.valueOf(rs.getDouble(4))});
+            }
+        }
+        return lista;
+    }
+
+    public synchronized void registrarEstacion(String id, String ubicacion) {
+        ejecutar("INSERT INTO estaciones (id, ubicacion) VALUES (?, ?) " +
+                "ON CONFLICT(id) DO UPDATE SET ubicacion = excluded.ubicacion", id, ubicacion);
+    }
+
+    public synchronized void actualizarEstado(String id, String estado) {
+        ejecutar("UPDATE estaciones SET estado = ? WHERE id = ?", estado, id);
+    }
+
+    public synchronized void setBloqueada(String id, boolean bloqueada) {
+        ejecutar("UPDATE estaciones SET bloqueada = ? WHERE id = ?", bloqueada ? "1" : "0", id);
+    }
+
+    public synchronized boolean existeOperario(String id) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM operarios WHERE id = ?")) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
+        } catch (SQLException e) {
+            System.err.println("[SQLITE] Error consultando operario: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public synchronized void altaOperario(String id, String nombre) {
+        ejecutar("INSERT INTO operarios (id, nombre) VALUES (?, ?) " +
+                "ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre", id, nombre);
+    }
+
+    /** Guarda un riego finalizado. Devuelve false si ya estaba guardado (mensaje duplicado). */
+    public synchronized boolean guardarRiego(String idRiego, String ws, String operario,
+                                             int segundos, double litros, String motivo) {
+        String sql = "INSERT OR IGNORE INTO riegos (id_riego, id_estacion, operario, segundos, litros, motivo) " +
+                "VALUES (?, ?, ?, ?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, idRiego);
+            ps.setString(2, ws);
+            ps.setString(3, operario);
+            ps.setInt(4, segundos);
+            ps.setDouble(5, litros);
+            ps.setString(6, motivo);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("[SQLITE] Error guardando riego: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Ultimos n riegos: [fecha, ws, operario, segundos, litros, motivo]. */
+    public synchronized List<String[]> ultimosRiegos(int n) {
+        List<String[]> lista = new ArrayList<>();
+        String sql = "SELECT fecha, id_estacion, operario, segundos, litros, motivo FROM riegos " +
+                "ORDER BY fecha DESC LIMIT ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, n);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    lista.add(new String[]{rs.getString(1), rs.getString(2), rs.getString(3),
+                            String.valueOf(rs.getInt(4)), String.format(java.util.Locale.ROOT, "%.2f", rs.getDouble(5)),
+                            rs.getString(6)});
                 }
-                System.out.println("===============================================================\n");
-            }
-        } catch (Exception e) {
-            System.err.println("[SQLITE] Error inicializando BD: " + e.getMessage());
-        }
-    }
-
-    public static synchronized void registrarEstacion(String idEstacion, String ubicacion, String nuevoEstado) {
-        String sql = "INSERT INTO estaciones (id, ubicacion, estado) VALUES (?, ?, ?) " +
-                     "ON CONFLICT(id) DO UPDATE SET ubicacion = excluded.ubicacion, estado = excluded.estado";
-        try (Connection conn = DriverManager.getConnection(URL);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, idEstacion);
-            pstmt.setString(2, ubicacion);
-            pstmt.setString(3, nuevoEstado);
-            pstmt.executeUpdate();
-        } catch (SQLException e) {
-            System.err.println("[SQLITE] Error registrando estación: " + e.getMessage());
-        }
-    }
-
-    public static synchronized void actualizarEstadoEstacion(String idEstacion, String nuevoEstado) {
-        String sql = "INSERT INTO estaciones (id, ubicacion, estado) VALUES (?, 'ZonaNorte', ?) " +
-                     "ON CONFLICT(id) DO UPDATE SET estado = excluded.estado";
-        try (Connection conn = DriverManager.getConnection(URL);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, idEstacion);
-            pstmt.setString(2, nuevoEstado);
-            pstmt.executeUpdate();
-        } catch (SQLException e) {
-            System.err.println("[SQLITE] Error actualizando estado: " + e.getMessage());
-        }
-    }
-
-    public static synchronized String obtenerEstadoEstacion(String idEstacion) {
-        String sql = "SELECT estado FROM estaciones WHERE id = ?";
-        try (Connection conn = DriverManager.getConnection(URL);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, idEstacion);
-            ResultSet rs = pstmt.executeQuery();
-            if (rs.next()) {
-                return rs.getString("estado");
             }
         } catch (SQLException e) {
-            System.err.println("[SQLITE] Error consultando estación: " + e.getMessage());
+            System.err.println("[SQLITE] Error leyendo riegos: " + e.getMessage());
         }
-        return "UNKNOWN";
+        return lista;
     }
 
-    public static synchronized void registrarResumen(String tramaResumen) {
-        String[] partes = tramaResumen.split("#");
-        if (partes.length < 3) return;
-        String operario = (partes.length >= 4) ? partes[3] : "FO-01";
-
-        String sql = "INSERT INTO historico_riegos (id_estacion, duracion, litros, operario) VALUES (?, ?, ?, ?)";
-        try (Connection conn = DriverManager.getConnection(URL);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, partes[0]);
-            pstmt.setInt(2, Integer.parseInt(partes[1]));
-            pstmt.setDouble(3, Double.parseDouble(partes[2]));
-            pstmt.setString(4, operario);
-            pstmt.executeUpdate();
-            System.out.println("[SQLITE] Resumen guardado en BD -> Estación: " + partes[0] +
-                               " | Segundos: " + partes[1] + " | Litros: " + partes[2] + " | Operario: " + operario);
-        } catch (Exception e) {
-            System.err.println("[SQLITE] Error guardando resumen: " + e.getMessage());
+    private void ejecutar(String sql, String... params) {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[SQLITE] Error: " + e.getMessage());
         }
     }
 }
