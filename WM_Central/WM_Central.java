@@ -38,6 +38,8 @@ public class WM_Central {
 
     static final long PETICION_CADUCADA_MS = 30_000;
     static final long PENDIENTE_TIMEOUT_MS = 10_000;
+    /** Un AUTH para una WS cuyo monitor envio latido hace menos de esto se considera un monitor duplicado. */
+    static final long MONITOR_DUPLICADO_MS = 3_000;
 
     static final Object LOCK = new Object();
     static final Map<String, EstacionWS> estaciones = new TreeMap<>();
@@ -124,12 +126,19 @@ public class WM_Central {
                 return "KO#WS " + id + " no registrada en WM_Central";
             }
             if (e.monitor != null && e.monitor != hilo) {
+                // Si el monitor actual sigue enviando latidos, el nuevo es un DUPLICADO (mismo ID en otra
+                // ventana/PC). Antes se sustituia siempre y los dos se echaban mutuamente cada 3-4 s.
+                if (System.currentTimeMillis() - e.ultimoLatido < MONITOR_DUPLICADO_MS) {
+                    log("[AUTH] DENEGADA: " + id + " ya tiene un monitor activo; se rechaza el duplicado desde " + origen);
+                    return "KO#" + id + " ya tiene un monitor conectado (cierra el otro o usa otro ID)";
+                }
                 log("[AUTH] " + id + " reconecta: se sustituye la conexion anterior del monitor");
                 HiloServidor viejo = e.monitor;
                 e.monitor = null;
                 viejo.cerrar();
             }
             e.monitor = hilo;
+            e.ultimoLatido = System.currentTimeMillis();
             e.salud = ""; // desconocida hasta el primer HEALTH
             actualizar(e);
             log("[AUTH] " + id + " (" + e.ubicacion + ") autenticada correctamente desde " + origen);
@@ -142,6 +151,7 @@ public class WM_Central {
         synchronized (LOCK) {
             EstacionWS e = estaciones.get(id);
             if (e == null || e.monitor != hilo) return "KO#Sesion no valida";
+            e.ultimoLatido = System.currentTimeMillis();
             String anterior = e.salud;
             e.salud = salud;
             if (!anterior.isEmpty() && !salud.equals(anterior)) {
@@ -258,7 +268,7 @@ public class WM_Central {
 
         int seg;
         try { seg = Integer.parseInt(c[4].trim()); } catch (Exception ex) { seg = -1; }
-        log("[PETICION] " + op + " solicita riego en " + ws + " durante " + seg + " s (id " + idPet + ")");
+        log("[PETICION] " + op + " solicita riego en " + ws + " durante " + durTxt(seg) + " (id " + idPet + ")");
         notificar(op, idPet, "INFO", "Peticion recibida en WM_Central. Validando disponibilidad de " + ws + "...");
         autorizarRiego(idPet, op, ws, seg);
     }
@@ -268,7 +278,7 @@ public class WM_Central {
         String motivo = null;
         boolean esFO = !op.startsWith("MANUAL-") && !"CENTRAL".equals(op);
         if (esFO && !bd.existeOperario(op)) motivo = "Operario " + op + " no registrado en WM_Central";
-        else if (seg < 1 || seg > 3600) motivo = "Duracion no valida (1-3600 s)";
+        else if (seg < 0 || seg > 3600) motivo = "Duracion no valida (1-3600 s, o 0 = sin limite)";
 
         synchronized (LOCK) {
             EstacionWS e = estaciones.get(ws);
@@ -288,8 +298,8 @@ public class WM_Central {
             e.pendienteDesde = System.currentTimeMillis();
             actualizar(e);
             enviarOrden(ws, "INICIAR#" + ws + "#" + seg + "#" + op + "#" + idPet);
-            log("[PETICION] AUTORIZADA " + idPet + ": " + ws + " regara " + seg + " s para " + op);
-            notificar(op, idPet, "AUTORIZADA", "Riego AUTORIZADO en " + ws + " (" + seg + " s). Orden enviada a la WS.");
+            log("[PETICION] AUTORIZADA " + idPet + ": " + ws + " regara " + durTxt(seg) + " para " + op);
+            notificar(op, idPet, "AUTORIZADA", "Riego AUTORIZADO en " + ws + " (" + durTxt(seg) + "). Orden enviada a la WS.");
             return true;
         }
     }
@@ -311,6 +321,9 @@ public class WM_Central {
             if (e == null) return;
             switch (tipo) {
                 case "INICIO":
+                    // INICIO viejo (p.ej. releido tras reiniciar la Central) o de un riego ya cerrado: ignorar,
+                    // si no la WS se quedaba "regando" un riego que ya no existe
+                    if (!reciente || finalizados.contains(id)) return;
                     e.idRiego = id;
                     e.operario = op;
                     e.objetivo = Integer.parseInt(c[4]);
@@ -319,8 +332,8 @@ public class WM_Central {
                     e.volumen = 0;
                     e.pendienteDesde = 0;
                     e.ultimaActividad = System.currentTimeMillis();
-                    log("[RIEGO] " + ws + ": electrovalvula ABIERTA (" + e.objetivo + " s, op " + op + ")");
-                    notificar(op, id, "INICIO", ws + ": electrovalvula abierta, regando " + e.objetivo + " s");
+                    log("[RIEGO] " + ws + ": electrovalvula ABIERTA (" + durTxt(e.objetivo) + ", op " + op + ")");
+                    notificar(op, id, "INICIO", ws + ": electrovalvula abierta, regando " + durTxt(e.objetivo));
                     actualizar(e);
                     break;
                 case "TEL":
@@ -334,8 +347,8 @@ public class WM_Central {
                         e.caudal = Double.parseDouble(c[6]);
                         e.volumen = Double.parseDouble(c[7]);
                         e.pendienteDesde = 0;
-                        notificar(op, id, "TEL", String.format(Locale.ROOT, "%s regando | %.1f L/min | %.2f L | %d/%d s",
-                                ws, e.caudal, e.volumen, e.segundos, e.objetivo));
+                        notificar(op, id, "TEL", String.format(Locale.ROOT, "%s regando | %.1f L/min | %.2f L | %d/%s s",
+                                ws, e.caudal, e.volumen, e.segundos, e.objetivo == 0 ? "sin limite" : String.valueOf(e.objetivo)));
                         panelSucio = true;
                     }
                     break;
@@ -442,9 +455,19 @@ public class WM_Central {
                         actualizar(e);
                         res.append(id).append(": activada. ");
                         break;
+                    case "PARAR":
+                        if (e.tieneRiego()) {
+                            log("[CENTRAL] Orden PARAR -> " + id);
+                            enviarOrden(id, "PARAR#" + id + "#PARADA_POR_CENTRAL");
+                            notificar(e.operario, e.idRiego, "INFO", "WM_Central ha parado el riego de " + id);
+                            res.append(id).append(": orden de parada enviada. ");
+                        } else {
+                            res.append(id).append(": no tiene riego en curso. ");
+                        }
+                        break;
                     case "REGAR":
                         String idPet = "CEN-" + id + "-" + System.currentTimeMillis();
-                        log("[CENTRAL] Orden REGAR -> " + id + " durante " + segundos + " s");
+                        log("[CENTRAL] Orden REGAR -> " + id + " durante " + durTxt(segundos));
                         boolean ok = autorizarRiego(idPet, "CENTRAL", id, segundos);
                         res.append(id).append(ok ? ": riego iniciado. " : ": no disponible (" + e.estado + "). ");
                         break;
@@ -569,6 +592,11 @@ public class WM_Central {
             registro.addFirst(l);
             while (registro.size() > 150) registro.removeLast();
         }
+    }
+
+    /** Duracion para mostrar: 0 segundos = riego sin limite (hasta que alguien lo pare). */
+    static String durTxt(int seg) {
+        return seg == 0 ? "tiempo ilimitado" : seg + " s";
     }
 
     static String limpiar(String s) {

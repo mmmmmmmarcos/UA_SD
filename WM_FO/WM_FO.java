@@ -151,7 +151,8 @@ public class WM_FO {
         String msg = "PETICION#" + idPet + "#" + idOperario + "#" + ws + "#" + segundos;
         try {
             productor.send(new ProducerRecord<>(T_PETICIONES, idOperario, msg)).get(8, TimeUnit.SECONDS);
-            log(CIAN + "Peticion enviada: regar " + ws + " durante " + segundos + " s (id " + idPet + ")");
+            log(CIAN + "Peticion enviada: regar " + ws + (segundos == 0 ? " SIN LIMITE (para con P " + ws + ")" : " durante " + segundos + " s")
+                    + " (id " + idPet + ")");
             return idPet;
         } catch (Exception e) {
             log(ROJO + "Imposible conectar con WM_Central / Kafka: " + e.getMessage());
@@ -187,13 +188,14 @@ public class WM_FO {
             String[] c = l.split("#");
             if (c.length < 2) { log(AMARILLO + "Linea ignorada (formato WS#segundos): " + l); continue; }
             int seg;
-            try { seg = Integer.parseInt(c[1].trim()); } catch (NumberFormatException e) { log(AMARILLO + "Linea ignorada: " + l); continue; }
+            try { seg = parseSegundos(c[1]); } catch (NumberFormatException e) { log(AMARILLO + "Linea ignorada: " + l); continue; }
             n++;
-            log(NEGRITA + "--- Fichero: servicio " + n + " -> " + c[0].trim() + " (" + seg + " s) ---");
+            log(NEGRITA + "--- Fichero: servicio " + n + " -> " + c[0].trim() + " (" + (seg == 0 ? "sin limite" : seg + " s") + ") ---");
 
             String idPet = solicitarRiego(c[0].trim(), seg);
             if (idPet != null) {
-                String res = esperarConclusion(idPet, (seg + 60) * 1000L);
+                // riego sin limite: se espera hasta que alguien lo pare
+                String res = esperarConclusion(idPet, seg == 0 ? Long.MAX_VALUE / 4 : (seg + 60) * 1000L);
                 log(NEGRITA + "Servicio " + n + " concluido: " + (res == null ? "sin respuesta (timeout)" : res));
             } else {
                 log(NEGRITA + "Servicio " + n + " concluido: FALLIDO (no se pudo enviar)");
@@ -230,11 +232,11 @@ public class WM_FO {
             try {
                 if (linea.contains("#")) {                       // atajo: WS-01#10
                     String[] c = linea.split("#");
-                    solicitarRiego(c[0].trim().toUpperCase(), Integer.parseInt(c[1].trim()));
+                    solicitarRiego(c[0].trim().toUpperCase(), parseSegundos(c[1]));
                 } else if (cmd.equals("R")) {
                     String ws = in.length > 1 ? in[1] : preguntar(sc, "Estacion (ej. WS-01): ");
-                    String seg = in.length > 2 ? in[2] : preguntar(sc, "Segundos de riego: ");
-                    if (ws != null && seg != null) solicitarRiego(ws.toUpperCase(), Integer.parseInt(seg));
+                    String seg = in.length > 2 ? in[2] : preguntar(sc, "Segundos de riego (INF = sin limite): ");
+                    if (ws != null && seg != null) solicitarRiego(ws.toUpperCase(), parseSegundos(seg));
                 } else if (cmd.equals("L")) {
                     listarEstaciones();
                 } else if (cmd.equals("P")) {
@@ -257,6 +259,15 @@ public class WM_FO {
             }
         }
         while (true) dormir(60_000); // sin teclado (contenedor sin -it)
+    }
+
+    /** "10" -> 10 ; "INF" / "INFINITO" / "I" -> 0 (0 = riego sin limite). Lanza NumberFormatException si no vale. */
+    private static int parseSegundos(String txt) {
+        String t = txt.trim().toUpperCase();
+        if (t.equals("INF") || t.equals("INFINITO") || t.equals("I")) return 0;
+        int n = Integer.parseInt(t);
+        if (n < 0) throw new NumberFormatException(t);
+        return n;
     }
 
     private static String preguntar(Scanner sc, String txt) {
@@ -290,7 +301,8 @@ public class WM_FO {
     private static void imprimirMenu() {
         System.out.println(NEGRITA + "\n--- MENU OPERARIO " + idOperario + " ---" + RST);
         System.out.println(" WS-01#10        Pedir riego (estacion#segundos)");
-        System.out.println(" R [ws] [seg]    Pedir riego");
+        System.out.println(" WS-01#INF       Riego SIN LIMITE (se para con P WS-01)");
+        System.out.println(" R [ws] [seg]    Pedir riego (seg = numero o INF)");
         System.out.println(" L               Ver estaciones y su estado");
         System.out.println(" P [ws]          Parar mi riego en una estacion");
         System.out.println(" F [fichero]     Ejecutar fichero de peticiones");

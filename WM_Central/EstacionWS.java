@@ -24,6 +24,7 @@ public class EstacionWS {
     // Conexion del monitor
     HiloServidor monitor;          // hilo del monitor autenticado (null = desconectada)
     String salud = SALUD_ENGINE_KO;
+    long ultimoLatido;             // ultimo AUTH/HEALTH recibido del monitor (para detectar monitores duplicados)
 
     // Riego en curso
     String idRiego = "";
@@ -64,8 +65,9 @@ public class EstacionWS {
      *   Resto                            -> AVAILABLE (verde)
      */
     String calcularEstado() {
-        if (monitor == null) return DISCONNECTED;
-        if (salud.isEmpty() || SALUD_FUGA.equals(salud) || SALUD_ENGINE_KO.equals(salud)) return LEAK;
+        // salud "" = monitor recien autenticado que aun no ha enviado su primer HEALTH: no es una fuga
+        if (monitor == null || salud.isEmpty()) return DISCONNECTED;
+        if (SALUD_FUGA.equals(salud) || SALUD_ENGINE_KO.equals(salud)) return LEAK;
         if (bloqueada) return OUT_OF_SERVICE;
         // Ocupada mientras haya un riego autorizado o en curso (aunque el monitor aun no lo haya reportado)
         if (SALUD_OK_REGANDO.equals(salud) || pendienteDesde > 0 || tieneRiego()) return WATERING;
@@ -76,14 +78,14 @@ public class EstacionWS {
         switch (estado) {
             case WATERING:
                 if (pendienteDesde > 0 && segundos == 0) return "Autorizado, abriendo valvula... (Op: " + operario + ")";
-                return String.format(java.util.Locale.ROOT, "%.1f L/min | %.2f L | %d/%d s | Op: %s",
-                        caudal, volumen, segundos, objetivo, operario);
+                return String.format(java.util.Locale.ROOT, "%.1f L/min | %.2f L | %d/%s s | Op: %s",
+                        caudal, volumen, segundos, objetivo == 0 ? "sin limite" : String.valueOf(objetivo), operario);
             case LEAK:
                 return SALUD_ENGINE_KO.equals(salud) ? "AVERIADA: engine sin respuesta" : "FUGA detectada";
             case OUT_OF_SERVICE:
                 return "Out of Service";
             case DISCONNECTED:
-                return "Desconectada";
+                return monitor != null ? "Monitor conectado, esperando estado del engine..." : "Desconectada";
             default:
                 return "Disponible";
         }
