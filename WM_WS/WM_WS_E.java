@@ -39,9 +39,11 @@ public class WM_WS_E {
     static volatile String estadoCentral = "SIN_CENTRAL";
     static volatile boolean fuga = false;
 
-    // Riego en curso (protegido por LOCK)
+    // Riego en curso (protegido por LOCK). 'regando' es volatile para que el hilo del monitor pueda
+    // leerlo SIN coger el LOCK: si no, cualquier retardo del temporizador (disco, consola) hacia que
+    // el engine no contestase a tiempo al monitor y este lo daba por caido (falsa FUGA/AVERIA).
     static final Object LOCK = new Object();
-    static boolean regando = false;
+    static volatile boolean regando = false;
     static int segundos, objetivo;
     static double volumen;
     static String operario = "", idRiego = "";
@@ -108,11 +110,8 @@ public class WM_WS_E {
                         log(VERDE + "Conectado a su monitor " + host + ":" + puerto);
                     }
                     cambiarEstadoCentral(c.length > 2 ? c[2] : "SIN_CENTRAL");
-                    String resp;
-                    synchronized (LOCK) {
-                        resp = fuga ? "KO#FUGA" : (regando ? "OK#REGANDO" : "OK#IDLE");
-                    }
-                    p.enviar(resp);
+                    // Sin LOCK a proposito (ver comentario de 'regando'): la respuesta debe salir al instante
+                    p.enviar(fuga ? "KO#FUGA" : (regando ? "OK#REGANDO" : "OK#IDLE"));
                 }
             } catch (IOException e) {
                 if (monitorOk || !avisado) {
@@ -138,7 +137,8 @@ public class WM_WS_E {
                 break;
             case "BLOQUEADA":
                 log(AMARILLO + NEGRITA + "WM_Central ha BLOQUEADO la estacion: OUT OF SERVICE");
-                detenerRiego("BLOQUEO_CENTRAL");
+                // En otro hilo: estamos en el hilo que contesta al monitor y no debe bloquearse
+                hilo("parada-bloqueo", () -> detenerRiego("BLOQUEO_CENTRAL"));
                 break;
             default:
                 log(VERDE + ("SIN_CENTRAL".equals(anterior) ? "Conexion con WM_Central OK. " : "")
@@ -158,10 +158,14 @@ public class WM_WS_E {
                         if (System.currentTimeMillis() - r.timestamp() > 15_000) continue; // orden caducada
                         String[] o = r.value().split("#", -1);
                         if (o.length < 2 || !(o[1].equals(idWS) || o[1].equalsIgnoreCase("ALL"))) continue;
-                        if ("INICIAR".equals(o[0])) ordenIniciar(Integer.parseInt(o[2]), o[3], o[4]);
-                        else if ("PARAR".equals(o[0])) {
-                            log(AMARILLO + "Orden de Central: PARAR (" + o[2] + ")");
-                            detenerRiego(o[2]);
+                        try {
+                            if ("INICIAR".equals(o[0])) ordenIniciar(Integer.parseInt(o[2]), o[3], o[4]);
+                            else if ("PARAR".equals(o[0])) {
+                                log(AMARILLO + "Orden de Central: PARAR (" + o[2] + ")");
+                                detenerRiego(o[2]);
+                            }
+                        } catch (RuntimeException ex) {   // orden mal formada: se ignora, el consumidor sigue
+                            log(AMARILLO + "Orden ignorada (formato no valido): " + r.value());
                         }
                     }
                 }
@@ -194,7 +198,7 @@ public class WM_WS_E {
             enviar(T_EVENTOS, "RECHAZO#" + idWS + "#" + op + "#" + id + "#" + motivo);
             return;
         }
-        log(VERDE + NEGRITA + "Orden de Central: ELECTROVALVULA ABIERTA durante " + seg + " s (solicitado por " + op + ")");
+        log(VERDE + NEGRITA + "Orden de Central: ELECTROVALVULA ABIERTA " + (seg == 0 ? "SIN LIMITE (hasta que se pare)" : "durante " + seg + " s") + " (solicitado por " + op + ")");
         enviar(T_EVENTOS, "INICIO#" + idWS + "#" + op + "#" + id + "#" + seg + "#" + fmt(caudal));
     }
 
@@ -211,9 +215,9 @@ public class WM_WS_E {
                 guardarRiego();
                 enviar(T_EVENTOS, "TEL#" + idWS + "#" + operario + "#" + idRiego + "#" + segundos + "#" + objetivo
                         + "#" + fmt(caudal) + "#" + fmt(volumen));
-                System.out.println(VERDE + "  ~ Regando " + idWS + "  " + segundos + "/" + objetivo + " s | Caudal: "
+                System.out.println(VERDE + "  ~ Regando " + idWS + "  " + segundos + "/" + (objetivo == 0 ? "∞" : objetivo) + " s | Caudal: "
                         + fmt(caudal) + " L/min | Acumulado: " + fmt(volumen) + " L | Op: " + operario + RST);
-                if (segundos >= objetivo) fin = true;
+                if (objetivo > 0 && segundos >= objetivo) fin = true;   // objetivo 0 = riego sin limite
             }
             if (fin) detenerRiego("COMPLETADO");
         }
@@ -270,27 +274,50 @@ public class WM_WS_E {
         }
     }
 
-    /** Envia a Central los resumenes de riego pendientes. Solo se borran cuando Kafka confirma. */
+    /** Un solo hilo reenviando a la vez (el periodico y los "envio-fin" no se pisan). */
+    static final Object LOCK_ENVIO = new Object();
+
+    /**
+     * Envia a Central los resumenes de riego pendientes. Solo se borran cuando Kafka confirma.
+     * El fichero (LOCK_PENDIENTES) solo se bloquea para leerlo y reescribirlo, NUNCA mientras se espera
+     * a Kafka (hasta 8 s): detenerRiego() lo necesita estando dentro del LOCK del riego.
+     */
     private static void reenviarPendientes() {
-        synchronized (LOCK_PENDIENTES) {
-            if (!ficheroPendientes.exists()) return;
-            List<String> restantes = new ArrayList<>();
-            try {
-                for (String l : Files.readAllLines(ficheroPendientes.toPath(), StandardCharsets.UTF_8)) {
-                    if (l.isBlank()) continue;
-                    if (!restantes.isEmpty()) { restantes.add(l); continue; }
+        synchronized (LOCK_ENVIO) {
+            List<String> lineas;
+            synchronized (LOCK_PENDIENTES) {
+                if (!ficheroPendientes.exists()) return;
+                try {
+                    lineas = Files.readAllLines(ficheroPendientes.toPath(), StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    log(ROJO + "Error con el fichero de pendientes: " + e.getMessage());
+                    return;
+                }
+            }
+            int procesadas = 0;   // lineas del principio del fichero ya enviadas (o vacias)
+            for (String l : lineas) {
+                if (!l.isBlank()) {
                     try {
                         productor.send(new ProducerRecord<>(T_EVENTOS, l.split("#")[1], l)).get(8, TimeUnit.SECONDS);
                         log(CIAN + "Resumen final del riego enviado a WM_Central: " + l);
                     } catch (Exception e) {
                         log(ROJO + "No se pudo enviar el resumen (Kafka inaccesible). Se reintentara.");
-                        restantes.add(l);
+                        break;
                     }
                 }
-                if (restantes.isEmpty()) ficheroPendientes.delete();
-                else Files.write(ficheroPendientes.toPath(), restantes, StandardCharsets.UTF_8);
-            } catch (IOException e) {
-                log(ROJO + "Error con el fichero de pendientes: " + e.getMessage());
+                procesadas++;
+            }
+            if (procesadas == 0) return;
+            // Mientras enviabamos solo se han podido AÑADIR lineas al final: quitamos las 'procesadas' primeras
+            synchronized (LOCK_PENDIENTES) {
+                try {
+                    List<String> actuales = Files.readAllLines(ficheroPendientes.toPath(), StandardCharsets.UTF_8);
+                    List<String> restantes = actuales.subList(Math.min(procesadas, actuales.size()), actuales.size());
+                    if (restantes.isEmpty()) ficheroPendientes.delete();
+                    else Files.write(ficheroPendientes.toPath(), restantes, StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    log(ROJO + "Error con el fichero de pendientes: " + e.getMessage());
+                }
             }
         }
     }
@@ -343,15 +370,20 @@ public class WM_WS_E {
             segTxt = sc.nextLine().trim();
         }
         int seg;
-        try { seg = Integer.parseInt(segTxt); } catch (NumberFormatException e) { log("Numero no valido."); return; }
+        String t = segTxt.trim().toUpperCase();
+        if (t.equals("INF") || t.equals("INFINITO") || t.equals("I")) seg = 0;   // 0 = sin limite
+        else {
+            try { seg = Integer.parseInt(t); } catch (NumberFormatException e) { log("Numero no valido (usa segundos o INF)."); return; }
+            if (seg < 0) { log("Numero no valido."); return; }
+        }
         String idPet = "MAN-" + idWS + "-" + System.currentTimeMillis();
         enviar(T_PETICIONES, "PETICION#" + idPet + "#MANUAL-" + idWS + "#" + idWS + "#" + seg);
-        log(CIAN + "Peticion de riego manual (" + seg + " s) enviada a WM_Central para su validacion...");
+        log(CIAN + "Peticion de riego manual (" + (seg == 0 ? "sin limite" : seg + " s") + ") enviada a WM_Central para su validacion...");
     }
 
     private static void imprimirMenu() {
         System.out.println(NEGRITA + "\n--- MENU ENGINE " + (idWS == null ? "" : idWS) + " ---" + RST);
-        System.out.println(" R [seg]  Solicitar riego desde la estacion");
+        System.out.println(" R [seg]  Solicitar riego desde la estacion (R INF = sin limite, se para con P)");
         System.out.println(" P        Parar el riego en curso");
         System.out.println(" F        Simular FUGA / reparar (el engine responde KO al monitor)");
         System.out.println(" E        Ver estado");
@@ -362,7 +394,7 @@ public class WM_WS_E {
         synchronized (LOCK) {
             System.out.println(NEGRITA + "Estado " + idWS + RST + ": monitor=" + (monitorOk ? "OK" : "CAIDO")
                     + " | central=" + estadoCentral + " | fuga=" + (fuga ? "SI" : "NO")
-                    + " | " + (regando ? "REGANDO " + segundos + "/" + objetivo + " s, " + fmt(volumen) + " L, op " + operario
+                    + " | " + (regando ? "REGANDO " + segundos + "/" + (objetivo == 0 ? "∞" : objetivo) + " s, " + fmt(volumen) + " L, op " + operario
                     : "valvula cerrada"));
         }
     }

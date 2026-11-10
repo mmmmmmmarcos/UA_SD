@@ -94,7 +94,9 @@
       <div class="controles">
         <select id="selWs"><option value="ALL">TODAS las WS</option></select>
         <input id="seg" type="number" min="1" max="3600" value="10" title="Segundos de riego"> s
+        <label title="Riega hasta que se pare con el botón Parar"><input id="inf" type="checkbox"> ∞ sin límite</label>
         <button class="b-regar" onclick="orden('REGAR')">Iniciar riego</button>
+        <button class="b-bloq" onclick="orden('PARAR')">Parar riego</button>
         <button class="b-bloq" onclick="orden('BLOQUEAR')">Bloquear</button>
         <button class="b-act" onclick="orden('ACTIVAR')">Activar</button>
       </div>
@@ -142,7 +144,7 @@
           <div class="ubi">📍 ${esc(e.ubicacion)}</div>
           <div class="est">${NOMBRES[e.estado] || e.estado}</div>
           <div class="det">${e.estado === "WATERING"
-              ? `💧 ${e.caudal} L/min · ${e.volumen} L<br>⏱ ${e.segundos}/${e.objetivo} s · 👷 ${esc(e.operario)}`
+              ? `💧 ${e.caudal} L/min · ${e.volumen} L<br>⏱ ${e.segundos}/${e.objetivo || "∞"} s · 👷 ${esc(e.operario)}`
               : esc(e.detalle)}</div>
           <div class="tot">Agua suministrada: ${e.total} L</div>
         </div>`).join("");
@@ -187,7 +189,7 @@
 
   async function orden(accion) {
     const ws = document.getElementById("selWs").value;
-    const seg = document.getElementById("seg").value;
+    const seg = document.getElementById("inf").checked ? 0 : document.getElementById("seg").value;
     await llamar(`api/orden?accion=${accion}&ws=${encodeURIComponent(ws)}&segundos=${seg}`);
   }
 
