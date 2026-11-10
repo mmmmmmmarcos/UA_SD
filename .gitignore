@@ -1,5 +1,6 @@
-﻿################################################################################
-# Este archivo .gitignore ha sido creado automáticamente por Microsoft(R) Visual Studio.
-################################################################################
-
 /.vs
+*.class
+datos_ws/
+*.db-wal
+*.db-shm
+/info

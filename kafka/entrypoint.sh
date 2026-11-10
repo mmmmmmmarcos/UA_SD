@@ -1,0 +1,33 @@
+#!/bin/sh
+# Configura Kafka con dos listeners:
+#   INTERNAL (29092): para WM_Central dentro de la red privada de Railway (kafka.railway.internal)
+#   EXTERNAL (9092) : para los PCs del laboratorio, a traves del TCP Proxy publico de Railway
+set -e
+
+EXT_HOST="${KAFKA_EXTERNAL_HOST:-${RAILWAY_TCP_PROXY_DOMAIN:-localhost}}"
+EXT_PORT="${KAFKA_EXTERNAL_PORT:-${RAILWAY_TCP_PROXY_PORT:-9092}}"
+INT_HOST="${KAFKA_INTERNAL_HOST:-${RAILWAY_PRIVATE_DOMAIN:-localhost}}"
+
+export KAFKA_NODE_ID=1
+export KAFKA_PROCESS_ROLES=broker,controller
+export KAFKA_LISTENERS="INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093"
+export KAFKA_ADVERTISED_LISTENERS="INTERNAL://${INT_HOST}:29092,EXTERNAL://${EXT_HOST}:${EXT_PORT}"
+export KAFKA_LISTENER_SECURITY_PROTOCOL_MAP="INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+export KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+export KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+export KAFKA_CONTROLLER_QUORUM_VOTERS="1@localhost:9093"
+export KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+export KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+export KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+export KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+export KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+export KAFKA_LOG_RETENTION_HOURS=168
+export KAFKA_LOG_DIRS=/var/lib/kafka/data/logs
+export KAFKA_HEAP_OPTS="${KAFKA_HEAP_OPTS:--Xmx512M -Xms256M}"
+export CLUSTER_ID="${CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}"
+
+mkdir -p /var/lib/kafka/data/logs
+echo "[WM-KAFKA] Listener interno : ${INT_HOST}:29092"
+echo "[WM-KAFKA] Listener externo : ${EXT_HOST}:${EXT_PORT}   <-- usar este en los PCs del laboratorio"
+
+exec /etc/kafka/docker/run

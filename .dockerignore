@@ -1,0 +1,7 @@
+.git
+.vs
+info
+datos_ws
+*.db
+*.class
+docker-compose.yml

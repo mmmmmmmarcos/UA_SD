@@ -1,227 +1,401 @@
 import java.io.*;
-import java.net.*;
-import java.util.Scanner;
-import java.util.Properties;
-import java.util.Collections;
-import java.util.UUID;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 
+/**
+ * WM_WS_E: Engine de una Watering Station (caudalimetro + electrovalvula + detector de fugas).
+ *
+ * Uso: java WM_WS_E <ip_broker:puerto> <ip_monitor:puerto> [caudal_L_min] [carpeta_datos]
+ *
+ *  - El ID de la WS NO se pasa por parametro: lo recibe de su monitor (WM_WS_M), que es quien
+ *    se autentica en WM_Central.
+ *  - Recibe ordenes de Central por Kafka (topic ordenes-ws) y le envia cada segundo la telemetria
+ *    del riego (topic eventos-ws).
+ *  - Guarda el riego en curso en disco cada segundo: si el engine cae, al volver a arrancar
+ *    envia el estado final del riego para que no se pierda nada.
+ */
 public class WM_WS_E {
-    private static volatile boolean hayFuga = false;
-    private static volatile boolean fueraServicio = false;
-    private static volatile boolean regando = false;
-    private static volatile int segundosTranscurridos = 0;
-    private static volatile int duracionObjetivo = 0;
-    private static volatile String operarioActual = "MANUAL";
+    static final String RST = "\u001B[0m", ROJO = "\u001B[31m", VERDE = "\u001B[32m",
+            AMARILLO = "\u001B[33m", CIAN = "\u001B[36m", GRIS = "\u001B[90m", NEGRITA = "\u001B[1m";
+    static final String T_PETICIONES = "peticiones-riego", T_ORDENES = "ordenes-ws", T_EVENTOS = "eventos-ws";
 
-    private static final double LITROS_MINUTO = 45.5;
-    private static String ID_ESTACION = "WS-01";
+    static volatile String idWS = null;
+    static volatile boolean monitorOk = false;
+    static volatile String estadoCentral = "SIN_CENTRAL";
+    static volatile boolean fuga = false;
+
+    // Riego en curso (protegido por LOCK)
+    static final Object LOCK = new Object();
+    static boolean regando = false;
+    static int segundos, objetivo;
+    static double volumen;
+    static String operario = "", idRiego = "";
+
+    static double caudal = 45.5;
+    static KafkaProducer<String, String> productor;
+    static File ficheroRiego, ficheroPendientes;
+    static final Object LOCK_PENDIENTES = new Object();
+    /** Envios asincronos: si Kafka cae no bloqueamos el temporizador ni el monitor. */
+    static final ThreadPoolExecutor envios = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(30), new ThreadPoolExecutor.DiscardOldestPolicy());
 
     public static void main(String[] args) {
+        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "error");
         if (args.length < 2) {
-            System.out.println("Uso: java WM_WS_E <Broker_IP:Puerto> <Monitor_IP:Puerto> [ID_WS]");
-            return;
+            System.out.println("Uso: java WM_WS_E <ip_broker:puerto> <ip_monitor:puerto> [caudal_L_min] [carpeta_datos]");
+            System.exit(1);
         }
+        String broker = args[0];
+        String[] hp = args[1].split(":");
+        String hostMonitor = hp[0];
+        int puertoMonitor = Integer.parseInt(hp[1]);
+        if (args.length >= 3) caudal = Double.parseDouble(args[2]);
+        File dir = new File(args.length >= 4 ? args[3] : "datos");
+        dir.mkdirs();
+        ficheroRiego = new File(dir, "riego_en_curso.txt");
+        ficheroPendientes = new File(dir, "resumenes_pendientes.txt");
 
-        String brokerUri = args[0];
-        String[] monitorParams = args[1].split(":");
-        String monitorIp = monitorParams[0];
-        int monitorPort = Integer.parseInt(monitorParams[1]);
-        if (args.length >= 3) ID_ESTACION = args[2];
+        System.out.println(NEGRITA + CIAN + "==============================================");
+        System.out.println("  WM_WS_E  -  ENGINE de estacion de riego");
+        System.out.println("  Broker: " + broker + "  |  Monitor: " + hostMonitor + ":" + puertoMonitor
+                + "  |  Caudal: " + caudal + " L/min");
+        System.out.println("==============================================" + RST);
 
-        Thread timerThread = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(1000);
-                    if (regando) {
-                        segundosTranscurridos++;
-                        double vol = (segundosTranscurridos / 60.0) * LITROS_MINUTO;
-                        System.out.println("[WS_ENGINE " + ID_ESTACION + "] Regando... (" + segundosTranscurridos + "/" + duracionObjetivo + "s) | Caudal: " + LITROS_MINUTO + " L/min | Acumulado: " + String.format("%.2f", vol) + " L | Op: " + operarioActual);
-                        if (duracionObjetivo > 0 && segundosTranscurridos >= duracionObjetivo) {
-                            System.out.println("\n[WS_ENGINE " + ID_ESTACION + "] Tiempo objetivo alcanzado. Cerrando electroválvula.");
-                            detenerRiego(brokerUri);
-                            imprimirMenu();
-                        }
-                    }
-                } catch (InterruptedException e) {
-                    break;
-                }
-            }
-        });
-        timerThread.start();
+        productor = new KafkaProducer<>(KafkaUtil.propsProductor(broker));
+        recuperarRiegoInterrumpido();
 
-        Thread inputThread = new Thread(() -> {
-            Scanner scanner = new Scanner(System.in);
-            imprimirMenu();
-            while (scanner.hasNextLine()) {
-                String input = scanner.nextLine().trim().toUpperCase();
+        hilo("pendientes", () -> { while (true) { reenviarPendientes(); dormir(3000); } });
+        hilo("temporizador", WM_WS_E::bucleTemporizador);
+        hilo("monitor", () -> bucleMonitor(hostMonitor, puertoMonitor, broker));
 
-                if (input.equals("F")) {
-                    hayFuga = !hayFuga;
-                    System.out.println("[WS_ENGINE] Fuga " + (hayFuga ? "ACTIVADA (KO)" : "REPARADA (OK)"));
-                    if (hayFuga && regando) {
-                        System.out.println("[WS_ENGINE] Emergencia: Fuga durante riego. Abortando suministro inmediatamente.");
-                        detenerRiego(brokerUri);
-                    }
-                } else if (input.equals("R")) {
-                    if (!regando && !hayFuga && !fueraServicio) {
-                        System.out.print("Segundos de riego: ");
-                        try {
-                            duracionObjetivo = Integer.parseInt(scanner.nextLine().trim());
-                            operarioActual = "MANUAL-WS";
-                            iniciarRiego();
-                        } catch (Exception e) {
-                            System.out.println("Formato inválido.");
-                        }
-                    } else {
-                        System.out.println(hayFuga ? "Averiada/Fuga. Imposible regar." : (fueraServicio ? "Out of Service." : "El agua ya corre."));
-                    }
-                } else if (input.equals("P")) {
-                    if (regando) {
-                        detenerRiego(brokerUri);
-                        System.out.println("[WS_ENGINE] Riego finalizado manualmente.");
-                    } else {
-                        System.out.println("Válvula ya cerrada.");
-                    }
-                }
-                imprimirMenu();
-            }
-        });
-        inputThread.start();
+        menu();
+    }
 
-        Thread kafkaThread = new Thread(() -> {
-            Properties props = new Properties();
-            props.put("bootstrap.servers", brokerUri);
-            props.put("group.id", "estaciones-group-" + ID_ESTACION + "-" + UUID.randomUUID());
-            props.put("auto.offset.reset", "latest");
-            props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-            props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+    // ------------------------------------------------------------------ enlace con el monitor
 
-            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-                consumer.subscribe(Collections.singletonList("ordenes-riego"));
+    private static void bucleMonitor(String host, int puerto, String broker) {
+        boolean avisado = false;
+        while (true) {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(host, puerto), 3000);
+                s.setSoTimeout(5000);
+                Protocolo p = new Protocolo(s.getInputStream(), s.getOutputStream());
                 while (true) {
-                    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
-                    for (ConsumerRecord<String, String> record : records) {
-                        String raw = record.value().trim();
-                        String accion = raw;
-                        String op = "FO-01";
+                    String[] c = p.recibir().split("#", -1);   // STATUS#idWS#estadoCentral
+                    if (idWS == null) {
+                        idWS = c[1];
+                        log(VERDE + NEGRITA + "ID asignado por el monitor: " + idWS);
+                        hilo("kafka-ordenes", () -> bucleOrdenes(broker));
+                    }
+                    if (!monitorOk) {
+                        monitorOk = true;
+                        avisado = false;
+                        log(VERDE + "Conectado a su monitor " + host + ":" + puerto);
+                    }
+                    cambiarEstadoCentral(c.length > 2 ? c[2] : "SIN_CENTRAL");
+                    String resp;
+                    synchronized (LOCK) {
+                        resp = fuga ? "KO#FUGA" : (regando ? "OK#REGANDO" : "OK#IDLE");
+                    }
+                    p.enviar(resp);
+                }
+            } catch (IOException e) {
+                if (monitorOk || !avisado) {
+                    log(ROJO + NEGRITA + "ESTACION AVERIADA: sin conexion con su monitor (" + e.getMessage()
+                            + "). No se admiten riegos. Reintentando...");
+                    avisado = true;
+                }
+                monitorOk = false;
+                detenerRiego("MONITOR_CAIDO");
+            }
+            dormir(2000);
+        }
+    }
 
-                        if (raw.contains("#")) {
-                            String[] partes = raw.split("#");
-                            if (!partes[0].equalsIgnoreCase(ID_ESTACION) && !partes[0].equalsIgnoreCase("ALL")) {
-                                continue; 
-                            }
-                            accion = partes[1];
-                            if (partes.length >= 3) op = partes[2];
+    private static void cambiarEstadoCentral(String nuevo) {
+        if (nuevo.equals(estadoCentral)) return;
+        String anterior = estadoCentral;
+        estadoCentral = nuevo;
+        switch (nuevo) {
+            case "SIN_CENTRAL":
+                log(ROJO + NEGRITA + "Imposible conectar con WM_Central. El riego en curso (si lo hay) continuara "
+                        + "hasta finalizar; no se admiten nuevos riegos.");
+                break;
+            case "BLOQUEADA":
+                log(AMARILLO + NEGRITA + "WM_Central ha BLOQUEADO la estacion: OUT OF SERVICE");
+                detenerRiego("BLOQUEO_CENTRAL");
+                break;
+            default:
+                log(VERDE + ("SIN_CENTRAL".equals(anterior) ? "Conexion con WM_Central OK. " : "")
+                        + "Estacion ACTIVA");
+        }
+    }
+
+    // ------------------------------------------------------------------ ordenes desde Central (Kafka)
+
+    private static void bucleOrdenes(String broker) {
+        Properties p = KafkaUtil.propsConsumidor(broker, "ws-" + idWS + "-" + UUID.randomUUID(), "latest");
+        while (true) {
+            try (KafkaConsumer<String, String> c = new KafkaConsumer<>(p)) {
+                c.subscribe(List.of(T_ORDENES));
+                while (true) {
+                    for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
+                        if (System.currentTimeMillis() - r.timestamp() > 15_000) continue; // orden caducada
+                        String[] o = r.value().split("#", -1);
+                        if (o.length < 2 || !(o[1].equals(idWS) || o[1].equalsIgnoreCase("ALL"))) continue;
+                        if ("INICIAR".equals(o[0])) ordenIniciar(Integer.parseInt(o[2]), o[3], o[4]);
+                        else if ("PARAR".equals(o[0])) {
+                            log(AMARILLO + "Orden de Central: PARAR (" + o[2] + ")");
+                            detenerRiego(o[2]);
                         }
-
-                        System.out.println("\n[KAFKA -> " + ID_ESTACION + "] Instrucción recibida: " + accion + " (Solicitante: " + op + ")");
-
-                        if (accion.equalsIgnoreCase("FUGA")) {
-                            hayFuga = !hayFuga;
-                            System.out.println("[WS_ENGINE] Fuga " + (hayFuga ? "ACTIVADA" : "REPARADA"));
-                            if (hayFuga && regando) detenerRiego(brokerUri);
-                        } else if (accion.equalsIgnoreCase("BLOCK")) {
-                            fueraServicio = true;
-                            if (regando) detenerRiego(brokerUri);
-                            System.out.println("[WS_ENGINE] Estación bloqueada por CENTRAL (Out of Service).");
-                        } else if (accion.equalsIgnoreCase("ACTIVATE")) {
-                            fueraServicio = false;
-                            hayFuga = false;
-                            System.out.println("[WS_ENGINE] Estación reactivada por CENTRAL (Available).");
-                        } else if (accion.equalsIgnoreCase("STOP")) {
-                            if (regando) detenerRiego(brokerUri);
-                        } else if (!hayFuga && !fueraServicio) {
-                            try {
-                                duracionObjetivo = Integer.parseInt(accion);
-                                operarioActual = op;
-                                if (!regando) iniciarRiego();
-                            } catch (NumberFormatException e) {
-                                System.out.println("[KAFKA] Comando no numérico ignorado: " + accion);
-                            }
-                        } else {
-                            System.out.println("[KAFKA] Orden rechazada: Estación en Fuga o Fuera de Servicio.");
-                        }
-                        imprimirMenu();
                     }
                 }
             } catch (Exception e) {
-                System.err.println("\n[KAFKA] Error de conexión con Broker: " + e.getMessage());
-            }
-        });
-        kafkaThread.start();
-
-        while (true) {
-            try (Socket socket = new Socket(monitorIp, monitorPort);
-                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
-
-                System.out.println("[WS_ENGINE " + ID_ESTACION + "] Enlazado al monitor local " + monitorIp + ":" + monitorPort);
-
-                String peticionMonitor;
-                while ((peticionMonitor = in.readLine()) != null) {
-                    if (hayFuga) {
-                        out.println("KO");
-                    } else if (regando) {
-                        out.println("REGANDO#" + LITROS_MINUTO);
-                    } else {
-                        out.println("OK");
-                    }
-                }
-            } catch (IOException e) {
-                System.err.println("\n[WS_ENGINE] Monitor caído o inalcanzable (" + e.getMessage() + "). Estación averiada sin supervisión.");
-                if (regando) {
-                    System.out.println("[WS_ENGINE] Deteniendo riego por pérdida de Monitor...");
-                    detenerRiego(brokerUri);
-                }
-                try { Thread.sleep(3000); } catch (InterruptedException ie) { break; }
+                log(ROJO + "Error con el broker Kafka: " + e.getMessage() + ". Reintentando...");
+                dormir(3000);
             }
         }
     }
 
-    private static void iniciarRiego() {
-        regando = true;
-        segundosTranscurridos = 0;
-        System.out.println("[WS_ENGINE " + ID_ESTACION + "] Electroválvula ABIERTA por " + duracionObjetivo + "s.");
+    private static void ordenIniciar(int seg, String op, String id) {
+        String motivo = null;
+        synchronized (LOCK) {
+            if (!monitorOk) motivo = "Estacion averiada (sin monitor)";
+            else if (fuga) motivo = "Fuga detectada";
+            else if ("BLOQUEADA".equals(estadoCentral)) motivo = "Out of Service";
+            else if (regando) motivo = "Ya esta regando";
+            if (motivo == null) {
+                regando = true;
+                segundos = 0;
+                volumen = 0;
+                objetivo = seg;
+                operario = op;
+                idRiego = id;
+                guardarRiego();
+            }
+        }
+        if (motivo != null) {
+            log(ROJO + "Orden de riego de " + op + " RECHAZADA: " + motivo);
+            enviar(T_EVENTOS, "RECHAZO#" + idWS + "#" + op + "#" + id + "#" + motivo);
+            return;
+        }
+        log(VERDE + NEGRITA + "Orden de Central: ELECTROVALVULA ABIERTA durante " + seg + " s (solicitado por " + op + ")");
+        enviar(T_EVENTOS, "INICIO#" + idWS + "#" + op + "#" + id + "#" + seg + "#" + fmt(caudal));
     }
 
-    private static synchronized void detenerRiego(String brokerUri) {
-        if (!regando) return;
-        regando = false;
-        int duracionReal = segundosTranscurridos;
-        segundosTranscurridos = 0;
-        System.out.println("[WS_ENGINE " + ID_ESTACION + "] Electroválvula CERRADA.");
-        notificarFinRiego(brokerUri, ID_ESTACION, duracionReal, LITROS_MINUTO, operarioActual);
+    // ------------------------------------------------------------------ riego
+
+    private static void bucleTemporizador() {
+        while (true) {
+            dormir(1000);
+            boolean fin = false;
+            synchronized (LOCK) {
+                if (!regando) continue;
+                segundos++;
+                volumen += caudal / 60.0;
+                guardarRiego();
+                enviar(T_EVENTOS, "TEL#" + idWS + "#" + operario + "#" + idRiego + "#" + segundos + "#" + objetivo
+                        + "#" + fmt(caudal) + "#" + fmt(volumen));
+                System.out.println(VERDE + "  ~ Regando " + idWS + "  " + segundos + "/" + objetivo + " s | Caudal: "
+                        + fmt(caudal) + " L/min | Acumulado: " + fmt(volumen) + " L | Op: " + operario + RST);
+                if (segundos >= objetivo) fin = true;
+            }
+            if (fin) detenerRiego("COMPLETADO");
+        }
+    }
+
+    static void detenerRiego(String motivo) {
+        String lineaFin;
+        synchronized (LOCK) {
+            if (!regando) return;
+            regando = false;
+            lineaFin = "FIN#" + idWS + "#" + operario + "#" + idRiego + "#" + segundos + "#" + fmt(volumen) + "#" + motivo;
+            log(AMARILLO + NEGRITA + "ELECTROVALVULA CERRADA (" + motivo + "). Total: " + segundos + " s, "
+                    + fmt(volumen) + " L");
+            encolarResumen(lineaFin);
+            ficheroRiego.delete();
+        }
+        hilo("envio-fin", WM_WS_E::reenviarPendientes);
+    }
+
+    /** Guarda el riego en curso para no perderlo si el engine cae. Llamar con LOCK. */
+    private static void guardarRiego() {
+        String linea = idWS + "#" + operario + "#" + idRiego + "#" + segundos + "#" + objetivo + "#" + fmt(volumen);
+        try {
+            Files.writeString(ficheroRiego.toPath(), linea, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log(ROJO + "No se pudo guardar el estado del riego: " + e.getMessage());
+        }
+    }
+
+    /** Al arrancar: si habia un riego a medias (el engine cayo), se envia su estado final. */
+    private static void recuperarRiegoInterrumpido() {
+        if (!ficheroRiego.exists()) return;
+        try {
+            String[] c = Files.readString(ficheroRiego.toPath(), StandardCharsets.UTF_8).trim().split("#", -1);
+            String fin = "FIN#" + c[0] + "#" + c[1] + "#" + c[2] + "#" + c[3] + "#" + c[5] + "#AVERIA_ENGINE";
+            log(AMARILLO + NEGRITA + "Recuperado riego interrumpido por caida del engine: " + c[0] + ", " + c[3]
+                    + " s, " + c[5] + " L (op " + c[1] + "). Se envia el estado final a Central.");
+            synchronized (LOCK) { encolarResumen(fin); }
+            ficheroRiego.delete();
+        } catch (Exception e) {
+            log(ROJO + "Fichero de riego corrupto, se descarta: " + e.getMessage());
+            ficheroRiego.delete();
+        }
+    }
+
+    private static void encolarResumen(String linea) {
+        synchronized (LOCK_PENDIENTES) {
+            try {
+                Files.writeString(ficheroPendientes.toPath(), linea + "\n", StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                log(ROJO + "No se pudo guardar el resumen pendiente: " + e.getMessage());
+            }
+        }
+    }
+
+    /** Envia a Central los resumenes de riego pendientes. Solo se borran cuando Kafka confirma. */
+    private static void reenviarPendientes() {
+        synchronized (LOCK_PENDIENTES) {
+            if (!ficheroPendientes.exists()) return;
+            List<String> restantes = new ArrayList<>();
+            try {
+                for (String l : Files.readAllLines(ficheroPendientes.toPath(), StandardCharsets.UTF_8)) {
+                    if (l.isBlank()) continue;
+                    if (!restantes.isEmpty()) { restantes.add(l); continue; }
+                    try {
+                        productor.send(new ProducerRecord<>(T_EVENTOS, l.split("#")[1], l)).get(8, TimeUnit.SECONDS);
+                        log(CIAN + "Resumen final del riego enviado a WM_Central: " + l);
+                    } catch (Exception e) {
+                        log(ROJO + "No se pudo enviar el resumen (Kafka inaccesible). Se reintentara.");
+                        restantes.add(l);
+                    }
+                }
+                if (restantes.isEmpty()) ficheroPendientes.delete();
+                else Files.write(ficheroPendientes.toPath(), restantes, StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                log(ROJO + "Error con el fichero de pendientes: " + e.getMessage());
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ menu de la estacion
+
+    private static void menu() {
+        imprimirMenu();
+        Scanner sc = new Scanner(System.in);
+        while (sc.hasNextLine()) {
+            String[] in = sc.nextLine().trim().toUpperCase().split("\\s+");
+            switch (in[0]) {
+                case "R": solicitarRiegoManual(in.length > 1 ? in[1] : null, sc); break;
+                case "P":
+                    boolean habia;
+                    synchronized (LOCK) { habia = regando; }
+                    if (habia) detenerRiego("PARADA_MANUAL_WS");
+                    else log("La valvula ya esta cerrada.");
+                    break;
+                case "F":
+                    fuga = !fuga;
+                    if (fuga) {
+                        log(ROJO + NEGRITA + "FUGA SIMULADA: el engine respondera KO al monitor");
+                        detenerRiego("FUGA");
+                    } else {
+                        log(VERDE + NEGRITA + "Fuga REPARADA: el engine vuelve a responder OK");
+                    }
+                    break;
+                case "E": imprimirEstado(); break;
+                case "": break;
+                default: imprimirMenu();
+            }
+        }
+        // stdin cerrado (p.ej. contenedor sin -it): seguimos funcionando sin menu
+        while (true) dormir(60_000);
+    }
+
+    private static void solicitarRiegoManual(String segTxt, Scanner sc) {
+        if (idWS == null || !monitorOk) {
+            log(ROJO + "Estacion AVERIADA (sin monitor): no se admiten riegos ni manuales.");
+            return;
+        }
+        if ("SIN_CENTRAL".equals(estadoCentral)) { log(ROJO + "Imposible conectar con WM_Central: no se admiten riegos."); return; }
+        if ("BLOQUEADA".equals(estadoCentral)) { log(AMARILLO + "Estacion Out of Service."); return; }
+        if (fuga) { log(ROJO + "Hay una fuga: imposible regar."); return; }
+        synchronized (LOCK) { if (regando) { log("Ya se esta regando."); return; } }
+        if (segTxt == null) {
+            System.out.print("Segundos de riego: ");
+            if (!sc.hasNextLine()) return;
+            segTxt = sc.nextLine().trim();
+        }
+        int seg;
+        try { seg = Integer.parseInt(segTxt); } catch (NumberFormatException e) { log("Numero no valido."); return; }
+        String idPet = "MAN-" + idWS + "-" + System.currentTimeMillis();
+        enviar(T_PETICIONES, "PETICION#" + idPet + "#MANUAL-" + idWS + "#" + idWS + "#" + seg);
+        log(CIAN + "Peticion de riego manual (" + seg + " s) enviada a WM_Central para su validacion...");
     }
 
     private static void imprimirMenu() {
-        System.out.println("\n=== PANEL WS_ENGINE (" + ID_ESTACION + ") ===");
-        System.out.println("[R] Abrir válvula (Manual)");
-        System.out.println("[P] Parar riego (Manual)");
-        System.out.println("[F] Provocar/Arreglar Fuga (KO/OK)");
-        System.out.print("> ");
+        System.out.println(NEGRITA + "\n--- MENU ENGINE " + (idWS == null ? "" : idWS) + " ---" + RST);
+        System.out.println(" R [seg]  Solicitar riego desde la estacion");
+        System.out.println(" P        Parar el riego en curso");
+        System.out.println(" F        Simular FUGA / reparar (el engine responde KO al monitor)");
+        System.out.println(" E        Ver estado");
+        System.out.println("(escribe la letra y pulsa Enter)");
     }
 
-    private static void notificarFinRiego(String brokerUri, String idEstacion, int duracionSegundos, double litrosPorMinuto, String op) {
-        Properties props = new Properties();
-        props.put("bootstrap.servers", brokerUri);
-        props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-
-        double volumenTotal = (duracionSegundos / 60.0) * litrosPorMinuto;
-        String resumen = idEstacion + "#" + duracionSegundos + "#" + String.format("%.2f", volumenTotal).replace(',', '.') + "#" + op;
-
-        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            producer.send(new ProducerRecord<>("resumenes_riego", idEstacion, resumen));
-            producer.flush();
-            System.out.println("[KAFKA] Resumen final enviado a Central y Operario: " + resumen);
-        } catch (Exception e) {
-            System.err.println("[KAFKA] Cola inaccesible al enviar resumen: " + e.getMessage());
+    private static void imprimirEstado() {
+        synchronized (LOCK) {
+            System.out.println(NEGRITA + "Estado " + idWS + RST + ": monitor=" + (monitorOk ? "OK" : "CAIDO")
+                    + " | central=" + estadoCentral + " | fuga=" + (fuga ? "SI" : "NO")
+                    + " | " + (regando ? "REGANDO " + segundos + "/" + objetivo + " s, " + fmt(volumen) + " L, op " + operario
+                    : "valvula cerrada"));
         }
+    }
+
+    // ------------------------------------------------------------------ utilidades
+
+    static void enviar(String topic, String valor) {
+        String key = idWS == null ? "?" : idWS;
+        envios.execute(() -> {
+            try {
+                productor.send(new ProducerRecord<>(topic, key, valor));
+            } catch (Exception e) {
+                log(ROJO + "Kafka inaccesible: " + e.getMessage());
+            }
+        });
+    }
+
+    static String fmt(double d) {
+        return String.format(Locale.ROOT, "%.2f", d);
+    }
+
+    static void hilo(String nombre, Runnable r) {
+        Thread t = new Thread(r, nombre);
+        t.setDaemon(true);
+        t.start();
+    }
+
+    static void dormir(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+    }
+
+    static synchronized void log(String msg) {
+        System.out.println(GRIS + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")) + RST
+                + " [ENGINE " + (idWS == null ? "?" : idWS) + "] " + msg + RST);
     }
 }

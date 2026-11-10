@@ -36,4 +36,5 @@ como leo dsd javascript el json del backend pa sacar solo la ltima orden? me esc
 se me quedan los puertos pillaos en linux (TIME_WAIT) si mato el monitor con ctrl+c. usando el try-with-resources de java se libera el serverSocket al instante?
 hay alguna forma d que sqlite me ponga las estaciones en DISCONNECTED al encender WM_Central pa q no salgan en Available por defecto?
 duda de hilos en WM_WS_E. tengo q leer de kafka, llevar el timer de riego y leer el scanner. si toco 'regando' desde los tres sitios le pongo volatile o tiro d synchronized?
-al subir kafka a aws me crashea pq se come la ram de la t2.micro. si le meto KAFKA_HEAP_OPTS="-Xmx512M" en el run de docker se soluciona el out of memory?
+al subir kafka a aws me crashea pq se come la ram de la t2.micro. si le meto KAFKA_HEAP_OPTS="-Xmx512M" en el run de docker se soluciona el out of memory
+hola ponme comentarios al principio de los archic¡vos que sirvan como resumen de lo que hace cada uno, para q el profe se entere de q hace cada clase y no tenga q leer todo el codigo

@@ -1,77 +1,78 @@
+import java.io.IOException;
 import java.net.Socket;
-import java.io.*;
+import java.net.SocketTimeoutException;
 
+/**
+ * Hilo que atiende a UN monitor (WM_WS_M) conectado por socket.
+ * Mensajes que entiende (dentro de tramas <STX>DATA<ETX><LRC>):
+ *   REGISTER#idWS#ubicacion   -> alta / actualizacion de la WS en SQLite
+ *   AUTH#idWS                 -> autenticacion (se deniega si la WS no esta registrada)
+ *   HEALTH#idWS#salud         -> latido cada segundo con la salud del engine
+ * Si no llega ningun mensaje en 5 s se considera que el monitor ha caido -> DISCONNECTED.
+ */
 public class HiloServidor extends Thread {
-    private Socket skCliente;
-    private String idEstacionAsociada = "WS-01";
+    private static final int TIMEOUT_LATIDO_MS = 5000;
 
-    public HiloServidor(Socket p_cliente) {
-        this.skCliente = p_cliente;
+    private final Socket socket;
+    private String idWS = null;
+
+    public HiloServidor(Socket socket) {
+        this.socket = socket;
+        setDaemon(true);
+        setName("monitor-" + socket.getRemoteSocketAddress());
+    }
+
+    public void cerrar() {
+        try { socket.close(); } catch (IOException ignored) { }
     }
 
     @Override
     public void run() {
-        try (DataInputStream in = new DataInputStream(skCliente.getInputStream());
-             DataOutputStream out = new DataOutputStream(skCliente.getOutputStream())) {
+        String origen = socket.getInetAddress().getHostAddress();
+        try {
+            socket.setSoTimeout(TIMEOUT_LATIDO_MS);
+            Protocolo p = new Protocolo(socket.getInputStream(), socket.getOutputStream());
 
             while (true) {
-                String trama = in.readUTF(); 
+                String msg = p.recibir();
+                String[] c = msg.split("#", -1);
+                String op = c[0].toUpperCase();
 
-                int stx = trama.indexOf("<STX>");
-                int etx = trama.indexOf("<ETX>");
-
-                if (stx != -1 && etx != -1 && etx > stx) {
-                    String payload = trama.substring(stx + 5, etx);
-                    String lrcRecibidoStr = trama.substring(etx + 5);
-
-                    byte lrcCalculado = 0;
-                    for (byte b : payload.getBytes()) {
-                        lrcCalculado ^= b;
-                    }
-
-                    if (!String.valueOf(lrcCalculado).equals(lrcRecibidoStr.trim())) {
-                        System.err.println("[WM_CENTRAL] Trama corrupta (LRC inválido). Enviando NACK.");
-                        out.writeUTF("NACK");
-                        continue;
-                    }
-
-                    String[] partes = payload.split("#");
-                    String operacion = partes[0];
-                    if (partes.length >= 2) {
-                        idEstacionAsociada = partes[1];
-                    }
-
-                    if ("REGISTER".equalsIgnoreCase(operacion)) {
-                        String ubicacion = (partes.length >= 3) ? partes[2] : "Desconocida";
-                        GestorBD.registrarEstacion(idEstacionAsociada, ubicacion, "AVAILABLE");
-                        WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Disponible");
-                        System.out.println("[WM_CENTRAL] Estación autenticada y registrada: " + idEstacionAsociada + " (" + ubicacion + ") [LRC OK]");
-                        out.writeUTF("ACK#REGISTERED");
-                    } else if ("ALERT".equalsIgnoreCase(operacion)) {
-                        String estadoReportado = (partes.length >= 3) ? partes[2] : "Disponible";
-                        String estadoBD = "AVAILABLE";
-
-                        if (estadoReportado.equalsIgnoreCase("Fuga") || estadoReportado.equalsIgnoreCase("Averiado")) {
-                            estadoBD = "FAULT";
-                        } else if (estadoReportado.equalsIgnoreCase("Regando")) {
-                            estadoBD = "BUSY";
+                switch (op) {
+                    case "REGISTER": {
+                        if (c.length < 3 || c[1].isBlank() || c[2].isBlank()) {
+                            p.enviar("KO#Formato REGISTER#idWS#ubicacion");
+                            break;
                         }
-
-                        GestorBD.actualizarEstadoEstacion(idEstacionAsociada, estadoBD);
-                        WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#" + estadoReportado);
-                        System.out.println("[WM_CENTRAL] Telemetría [" + idEstacionAsociada + "]: " + estadoReportado + " -> SQLite [" + estadoBD + "] [LRC OK]");
-                        out.writeUTF("ACK#" + estadoBD);
-                    } else {
-                        out.writeUTF("ACK");
+                        WM_Central.registrarEstacion(c[1].trim(), c[2].trim());
+                        p.enviar("OK#REGISTRADA");
+                        break;
                     }
-                } else {
-                    out.writeUTF("NACK");
+                    case "AUTH": {
+                        if (c.length < 2) { p.enviar("KO#Formato AUTH#idWS"); break; }
+                        String resp = WM_Central.autenticar(c[1].trim(), this, origen);
+                        if (resp.startsWith("OK")) idWS = c[1].trim();
+                        p.enviar(resp);
+                        break;
+                    }
+                    case "HEALTH": {
+                        if (idWS == null) { p.enviar("KO#Monitor no autenticado"); break; }
+                        String salud = c.length >= 3 ? c[2].trim() : EstacionWS.SALUD_ENGINE_KO;
+                        p.enviar(WM_Central.latido(idWS, this, salud));
+                        break;
+                    }
+                    default:
+                        p.enviar("KO#Operacion desconocida: " + op);
                 }
             }
-        } catch (Exception e) {
-            System.err.println("[WM_CENTRAL] Monitor de " + idEstacionAsociada + " desconectado abruptamente (" + e.getMessage() + ").");
-            GestorBD.actualizarEstadoEstacion(idEstacionAsociada, "DISCONNECTED");
-            WM_Central.eventosGlobales.add("ESTADO_TCP|" + idEstacionAsociada + "#Desconectada");
+        } catch (SocketTimeoutException e) {
+            if (idWS != null) WM_Central.log("[SOCKET] " + idWS + ": sin latidos del monitor en "
+                    + (TIMEOUT_LATIDO_MS / 1000) + " s");
+        } catch (IOException e) {
+            if (idWS != null) WM_Central.log("[SOCKET] " + idWS + ": conexion con monitor perdida (" + e.getMessage() + ")");
+        } finally {
+            cerrar();
+            if (idWS != null) WM_Central.monitorDesconectado(idWS, this);
         }
     }
 }
