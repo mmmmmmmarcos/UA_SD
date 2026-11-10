@@ -33,11 +33,21 @@ services:
       PORT: "8000"
       DB_PATH: /data/riego_sd.db
     ports:
-      - "8080:8080"
-      - "8000:8000"
-    volumes:
-      - central-datos:/data
+      - "5000:5000"
+    command: sh -c "sleep 15 && java -cp 'lib/*:WM_WS' WM_WS_M central:8080 5000 WS-01 ZonaNorte"
 
-volumes:
-  kafka-datos:
-  central-datos:
+  engine:
+    build: .
+    container_name: wm_engine
+    depends_on:
+      - monitor
+    stdin_open: true
+    tty: true
+    command: sh -c "sleep 20 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Dorg.slf4j.simpleLogger.log.org.apache.kafka.clients.NetworkClient=error -cp 'lib/*:WM_WS' WM_WS_E 98.93.69.19:9092 monitor:5000 WS-01"
+
+  operario:
+    build: .
+    container_name: wm_fo
+    stdin_open: true
+    tty: true
+    command: sh -c "sleep 25 && java -Dorg.slf4j.simpleLogger.defaultLogLevel=warn -Dorg.slf4j.simpleLogger.log.org.apache.kafka.clients.NetworkClient=error -cp 'lib/*:WM_FO' WM_FO 98.93.69.19:9092 FO-01 MANUAL"
