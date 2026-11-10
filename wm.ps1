@@ -44,6 +44,7 @@ function Leer-Config {
 }
 
 function Asegurar-Docker {
+    $ErrorActionPreference = "Continue"   # docker inspect falla a proposito si la imagen/red no existen
     docker info *> $null
     if ($LASTEXITCODE -ne 0) { throw "Docker no esta arrancado. Abre Docker Desktop y vuelve a intentarlo." }
     docker image inspect $Imagen *> $null
