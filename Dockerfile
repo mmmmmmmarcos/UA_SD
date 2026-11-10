@@ -18,7 +18,7 @@ WORKDIR /app
 COPY lib/ lib/
 COPY --from=build /out/ clases/
 COPY WM_Central/web/ web/
-COPY peticiones.txt ./
+COPY WM_FO/peticiones.txt ./
 
 # Parametros de WM_Central (se pueden cambiar con variables de entorno en Railway)
 ENV PUERTO_SOCKET=8080 \
