@@ -49,7 +49,8 @@ public class WM_WS_E {
     static String operario = "", idRiego = "";
 
     static double caudal = 45.5;
-    static KafkaProducer<String, String> productor;
+    static volatile KafkaProducer<String, String> productor;   // null hasta que el broker sea accesible
+    static long inicioRiego;   // ms en que se abrio la valvula (protegido por LOCK)
     static File ficheroRiego, ficheroPendientes;
     static final Object LOCK_PENDIENTES = new Object();
     /** Envios asincronos: si Kafka cae no bloqueamos el temporizador ni el monitor. */
@@ -63,10 +64,20 @@ public class WM_WS_E {
             System.exit(1);
         }
         String broker = args[0];
-        String[] hp = args[1].split(":");
-        String hostMonitor = hp[0];
-        int puertoMonitor = Integer.parseInt(hp[1]);
-        if (args.length >= 3) caudal = Double.parseDouble(args[2]);
+        String hostMonitor;
+        int puertoMonitor;
+        try {
+            String[] hp = args[1].split(":");
+            hostMonitor = hp[0];
+            puertoMonitor = Integer.parseInt(hp[1].trim());
+            if (args.length >= 3) caudal = Double.parseDouble(args[2].trim());
+            if (caudal <= 0) throw new NumberFormatException("caudal <= 0");
+        } catch (RuntimeException e) {
+            System.out.println("Parametros no validos: el monitor debe ser ip:puerto y el caudal un numero positivo (L/min).");
+            System.out.println("Uso: java WM_WS_E <ip_broker:puerto> <ip_monitor:puerto> [caudal_L_min] [carpeta_datos]");
+            System.exit(1);
+            return;
+        }
         File dir = new File(args.length >= 4 ? args[3] : "datos");
         dir.mkdirs();
         ficheroRiego = new File(dir, "riego_en_curso.txt");
@@ -78,7 +89,8 @@ public class WM_WS_E {
                 + "  |  Caudal: " + caudal + " L/min");
         System.out.println("==============================================" + RST);
 
-        productor = new KafkaProducer<>(KafkaUtil.propsProductor(broker));
+        // En otro hilo: si el broker no resuelve, el engine sigue contestando a su monitor mientras reintenta
+        hilo("kafka-productor", () -> productor = KafkaUtil.crearProductor(broker, m -> log(ROJO + m)));
         recuperarRiegoInterrumpido();
 
         hilo("pendientes", () -> { while (true) { reenviarPendientes(); dormir(3000); } });
@@ -150,8 +162,10 @@ public class WM_WS_E {
 
     private static void bucleOrdenes(String broker) {
         Properties p = KafkaUtil.propsConsumidor(broker, "ws-" + idWS + "-" + UUID.randomUUID(), "latest");
+        String ultimoError = null;   // el mismo error solo se muestra una vez (si no, sale cada 3 s)
         while (true) {
             try (KafkaConsumer<String, String> c = new KafkaConsumer<>(p)) {
+                ultimoError = null;
                 c.subscribe(List.of(T_ORDENES));
                 while (true) {
                     for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
@@ -170,7 +184,10 @@ public class WM_WS_E {
                     }
                 }
             } catch (Exception e) {
-                log(ROJO + "Error con el broker Kafka: " + e.getMessage() + ". Reintentando...");
+                if (!String.valueOf(e.getMessage()).equals(ultimoError)) {
+                    ultimoError = String.valueOf(e.getMessage());
+                    log(ROJO + "Error con el broker Kafka: " + ultimoError + ". Reintentando...");
+                }
                 dormir(3000);
             }
         }
@@ -181,10 +198,13 @@ public class WM_WS_E {
         synchronized (LOCK) {
             if (!monitorOk) motivo = "Estacion averiada (sin monitor)";
             else if (fuga) motivo = "Fuga detectada";
-            else if ("BLOQUEADA".equals(estadoCentral)) motivo = "Out of Service";
+            // No se comprueba aqui si la WS esta BLOQUEADA: quien decide es la Central, que ya lo valido antes
+            // de enviar la orden. El estadoCentral local llega por el latido con 1-2 s de retraso y, justo
+            // despues de un ACTIVAR, hacia rechazar riegos que la Central acababa de autorizar.
             else if (regando) motivo = "Ya esta regando";
             if (motivo == null) {
                 regando = true;
+                inicioRiego = System.currentTimeMillis();
                 segundos = 0;
                 volumen = 0;
                 objetivo = seg;
@@ -206,10 +226,13 @@ public class WM_WS_E {
 
     private static void bucleTemporizador() {
         while (true) {
-            dormir(1000);
+            // Se comprueba cada 100 ms y cada segundo cuenta desde que se abrio la valvula: con un sleep(1000)
+            // fijo el primer "segundo" podia durar casi 0 y un riego de N s duraba en realidad N-1.
+            dormir(100);
             boolean fin = false;
             synchronized (LOCK) {
                 if (!regando) continue;
+                if (System.currentTimeMillis() - inicioRiego < (segundos + 1) * 1000L) continue;
                 segundos++;
                 volumen += caudal / 60.0;
                 guardarRiego();
@@ -283,6 +306,8 @@ public class WM_WS_E {
      * a Kafka (hasta 8 s): detenerRiego() lo necesita estando dentro del LOCK del riego.
      */
     private static void reenviarPendientes() {
+        KafkaProducer<String, String> prod = productor;
+        if (prod == null) return;   // broker aun no accesible: el hilo "pendientes" lo reintentara
         synchronized (LOCK_ENVIO) {
             List<String> lineas;
             synchronized (LOCK_PENDIENTES) {
@@ -298,7 +323,7 @@ public class WM_WS_E {
             for (String l : lineas) {
                 if (!l.isBlank()) {
                     try {
-                        productor.send(new ProducerRecord<>(T_EVENTOS, l.split("#")[1], l)).get(8, TimeUnit.SECONDS);
+                        prod.send(new ProducerRecord<>(T_EVENTOS, l.split("#")[1], l)).get(8, TimeUnit.SECONDS);
                         log(CIAN + "Resumen final del riego enviado a WM_Central: " + l);
                     } catch (Exception e) {
                         log(ROJO + "No se pudo enviar el resumen (Kafka inaccesible). Se reintentara.");
@@ -404,8 +429,10 @@ public class WM_WS_E {
     static void enviar(String topic, String valor) {
         String key = idWS == null ? "?" : idWS;
         envios.execute(() -> {
+            KafkaProducer<String, String> p = productor;
+            if (p == null) { log(ROJO + "Kafka inaccesible: mensaje no enviado"); return; }
             try {
-                productor.send(new ProducerRecord<>(topic, key, valor));
+                p.send(new ProducerRecord<>(topic, key, valor));
             } catch (Exception e) {
                 log(ROJO + "Kafka inaccesible: " + e.getMessage());
             }

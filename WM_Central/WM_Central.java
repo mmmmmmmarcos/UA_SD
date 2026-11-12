@@ -44,7 +44,13 @@ public class WM_Central {
     static final Object LOCK = new Object();
     static final Map<String, EstacionWS> estaciones = new TreeMap<>();
     static GestorBD bd;
-    static KafkaProducer<String, String> productor;
+    static volatile KafkaProducer<String, String> productor;   // null hasta que el broker sea accesible
+    /** IDs de WS y operarios: sin '#', ',', ';' ni espacios, que romperian los mensajes (p.ej. estado-red). */
+    static final java.util.regex.Pattern ID_VALIDO = java.util.regex.Pattern.compile("[A-Za-z0-9_-]{1,32}");
+
+    static boolean idValido(String id) {
+        return id != null && ID_VALIDO.matcher(id).matches();
+    }
     static volatile boolean kafkaOk = false;
     static volatile boolean panelSucio = true;
     static final Deque<String> registro = new ArrayDeque<>();
@@ -56,9 +62,17 @@ public class WM_Central {
             System.out.println("Uso: java WM_Central <puerto_sockets> <ip_broker:puerto> [puerto_http] [ruta_bd]");
             System.exit(1);
         }
-        int puertoSockets = Integer.parseInt(args[0]);
+        int puertoSockets, puertoHttp;
+        try {
+            puertoSockets = Integer.parseInt(args[0].trim());
+            puertoHttp = args.length >= 3 ? Integer.parseInt(args[2].trim()) : 8000;
+        } catch (NumberFormatException e) {
+            System.out.println("Puerto no valido (" + e.getMessage() + ").");
+            System.out.println("Uso: java WM_Central <puerto_sockets> <ip_broker:puerto> [puerto_http] [ruta_bd]");
+            System.exit(1);
+            return;
+        }
         String broker = args[1];
-        int puertoHttp = args.length >= 3 ? Integer.parseInt(args[2]) : 8000;
         String rutaBD = args.length >= 4 ? args[3] : "riego_sd.db";
 
         System.out.println("==============================================================");
@@ -80,7 +94,8 @@ public class WM_Central {
 
         // 2. Kafka
         crearTopics(broker);
-        productor = new KafkaProducer<>(KafkaUtil.propsProductor(broker));
+        // En otro hilo: si el broker no resuelve, la Central sigue atendiendo monitores y panel mientras reintenta
+        hilo("kafka-productor", () -> productor = KafkaUtil.crearProductor(broker, WM_Central::log));
         hilo("kafka-consumidor", () -> bucleConsumidor(broker));
         hilo("latido-central", WM_Central::bucleLatido);
 
@@ -101,6 +116,7 @@ public class WM_Central {
     // ------------------------------------------------------------------ socket / monitores
 
     static void registrarEstacion(String id, String ubicacion) {
+        if (!idValido(id)) return;   // HiloServidor ya lo rechaza con KO; esto es por si se llama desde otro sitio
         ubicacion = limpiar(ubicacion);
         synchronized (LOCK) {
             EstacionWS e = estaciones.get(id);
@@ -170,7 +186,7 @@ public class WM_Central {
                             + " durante su riego (engine caido). Recibira el resumen cuando la WS se recupere.");
                 }
             }
-            actualizar(e);
+            recalcular(e);   // llega cada segundo: solo redibuja el panel si el estado ha cambiado
             return "OK#" + (e.bloqueada ? "BLOQUEADA" : "ACTIVA");
         }
     }
@@ -213,8 +229,10 @@ public class WM_Central {
 
     private static void bucleConsumidor(String broker) {
         Properties p = KafkaUtil.propsConsumidor(broker, "wm-central", "earliest", "wm-central-1");
+        String ultimoError = null;   // el mismo error solo se muestra una vez (si no, sale cada 3 s)
         while (true) {
             try (KafkaConsumer<String, String> c = new KafkaConsumer<>(p)) {
+                ultimoError = null;
                 c.subscribe(List.of(T_PETICIONES, T_EVENTOS));
                 while (true) {
                     ConsumerRecords<String, String> recs = c.poll(java.time.Duration.ofMillis(500));
@@ -228,7 +246,10 @@ public class WM_Central {
                     }
                 }
             } catch (Exception e) {
-                log("[KAFKA] Error en el consumidor: " + e.getMessage() + ". Reintentando en 3 s");
+                if (!String.valueOf(e.getMessage()).equals(ultimoError)) {
+                    ultimoError = String.valueOf(e.getMessage());
+                    log("[KAFKA] Error en el consumidor: " + ultimoError + ". Reintentando cada 3 s");
+                }
                 dormir(3000);
             }
         }
@@ -238,8 +259,9 @@ public class WM_Central {
     static void procesarPeticion(String msg, long ts) {
         String[] c = msg.split("#", -1);
         String tipo = c[0];
-        if ("LATIDO".equals(tipo)) {           // LATIDO#idOperario (cada 2 s desde cada FO)
-            if (System.currentTimeMillis() - ts < 10_000) latidoOperario(c[1].trim());
+        if ("LATIDO".equals(tipo)) {           // LATIDO#idOperario#token (cada 2 s desde cada FO)
+            String id = c[1].trim();
+            if (idValido(id) && System.currentTimeMillis() - ts < 10_000) latidoOperario(id, c.length > 2 ? c[2].trim() : "");
             return;
         }
         String idPet = c[1];
@@ -273,8 +295,8 @@ public class WM_Central {
         autorizarRiego(idPet, op, ws, seg);
     }
 
-    /** Validacion comun para peticiones de FO, de la propia WS o de la Central. */
-    static boolean autorizarRiego(String idPet, String op, String ws, int seg) {
+    /** Validacion comun para peticiones de FO, de la propia WS o de la Central. Devuelve null si se autoriza o el motivo del rechazo. */
+    static String autorizarRiego(String idPet, String op, String ws, int seg) {
         String motivo = null;
         boolean esFO = !op.startsWith("MANUAL-") && !"CENTRAL".equals(op);
         if (esFO && !bd.existeOperario(op)) motivo = "Operario " + op + " no registrado en WM_Central";
@@ -289,7 +311,7 @@ public class WM_Central {
             if (motivo != null) {
                 log("[PETICION] DENEGADA " + idPet + " (" + op + " -> " + ws + "): " + motivo);
                 notificar(op, idPet, "DENEGADA", "Riego DENEGADO: " + motivo);
-                return false;
+                return motivo;
             }
             e.limpiarRiego();
             e.idRiego = idPet;
@@ -300,7 +322,7 @@ public class WM_Central {
             enviarOrden(ws, "INICIAR#" + ws + "#" + seg + "#" + op + "#" + idPet);
             log("[PETICION] AUTORIZADA " + idPet + ": " + ws + " regara " + durTxt(seg) + " para " + op);
             notificar(op, idPet, "AUTORIZADA", "Riego AUTORIZADO en " + ws + " (" + durTxt(seg) + "). Orden enviada a la WS.");
-            return true;
+            return null;
         }
     }
 
@@ -371,12 +393,15 @@ public class WM_Central {
                     actualizar(e);
                     break;
                 }
-                case "RECHAZO":
+                case "RECHAZO": {
+                    // El motivo se lee ANTES de tocar el estado: si faltaba, la excepcion dejaba la WS a medias
+                    String motivoRechazo = c.length > 4 ? c[4] : "sin motivo";
                     if (e.idRiego.equals(id)) e.limpiarRiego();
-                    log("[RIEGO] " + ws + " rechaza la orden " + id + ": " + c[4]);
-                    notificar(op, id, "DENEGADA", ws + " ha rechazado el riego: " + c[4]);
+                    log("[RIEGO] " + ws + " rechaza la orden " + id + ": " + motivoRechazo);
+                    notificar(op, id, "DENEGADA", ws + " ha rechazado el riego: " + motivoRechazo);
                     actualizar(e);
                     break;
+                }
                 default:
                     break;
             }
@@ -402,8 +427,10 @@ public class WM_Central {
 
     static void enviar(String topic, String key, String valor) {
         envios.execute(() -> {
+            KafkaProducer<String, String> p = productor;
+            if (p == null) { estadoKafka(new IllegalStateException("broker no accesible todavia")); return; }
             try {
-                productor.send(new ProducerRecord<>(topic, key, valor), (md, ex) -> estadoKafka(ex));
+                p.send(new ProducerRecord<>(topic, key, valor), (md, ex) -> estadoKafka(ex));
             } catch (Exception ex) {
                 estadoKafka(ex);
             }
@@ -468,8 +495,8 @@ public class WM_Central {
                     case "REGAR":
                         String idPet = "CEN-" + id + "-" + System.currentTimeMillis();
                         log("[CENTRAL] Orden REGAR -> " + id + " durante " + durTxt(segundos));
-                        boolean ok = autorizarRiego(idPet, "CENTRAL", id, segundos);
-                        res.append(id).append(ok ? ": riego iniciado. " : ": no disponible (" + e.estado + "). ");
+                        String motivo = autorizarRiego(idPet, "CENTRAL", id, segundos);
+                        res.append(id).append(motivo == null ? ": riego iniciado. " : ": DENEGADO, " + motivo + ". ");
                         break;
                     default:
                         return "Accion desconocida: " + accion;
@@ -485,9 +512,29 @@ public class WM_Central {
     /** id operario -> ultimo latido recibido. Protegido por LOCK. */
     static final Map<String, Long> operarios = new TreeMap<>();
     static final Set<String> operariosConectados = new HashSet<>();
+    /** id operario -> token de la instancia (ventana) de WM_FO aceptada. Protegido por LOCK. */
+    static final Map<String, String> tokensFO = new HashMap<>();
+    /** "id#token" de duplicados ya avisados en el log (para no repetir el aviso cada 2 s). */
+    static final Set<String> duplicadosAvisados = new HashSet<>();
 
-    static void latidoOperario(String id) {
+    /**
+     * Cada ventana de WM_FO envia un token aleatorio. Si llega un token distinto para un operario que
+     * sigue vivo es un DUPLICADO (mismo ID abierto dos veces): se ignora. El FO duplicado ve en estado-red
+     * que el token aceptado no es el suyo y se cierra antes de unirse al grupo Kafka del operario
+     * (dos consumidores con el mismo group.instance.id se expulsan mutuamente y se pierden notificaciones).
+     * Si el FO anterior se cayo, deja de enviar latidos y a los FO_TIMEOUT_MS se acepta el nuevo token.
+     */
+    static void latidoOperario(String id, String token) {
         synchronized (LOCK) {
+            String actual = tokensFO.get(id);
+            if (operariosConectados.contains(id) && actual != null && !actual.equals(token)) {
+                if (duplicadosAvisados.add(id + "#" + token)) {
+                    log("[FO] Otra ventana de " + id + " intenta conectarse, pero la anterior sigue activa: se ignora "
+                            + "(si la anterior se cayo, se aceptara en unos segundos)");
+                }
+                return;
+            }
+            tokensFO.put(id, token);
             operarios.put(id, System.currentTimeMillis());
             if (operariosConectados.add(id)) {
                 log("[FO] Operario " + id + " CONECTADO" + (bd.existeOperario(id) ? "" : " (NO registrado en la BD)"));
@@ -543,6 +590,9 @@ public class WM_Central {
                     }
                     sb.append(e.id).append(',').append(e.ubicacion).append(',').append(e.estado).append(';');
                 }
+                // RED#ts#ws,ubicacion,estado;...#operario=token;...  (el token lo usa WM_FO para detectar duplicados)
+                sb.append('#');
+                for (String op : operariosConectados) sb.append(op).append('=').append(tokensFO.getOrDefault(op, "")).append(';');
             }
             enviar(T_RED, "central", sb.toString());
             if (panelSucio) {
@@ -554,12 +604,18 @@ public class WM_Central {
 
     /** Recalcula el estado de la WS y lo guarda en BD si ha cambiado. Llamar con LOCK. */
     static void actualizar(EstacionWS e) {
+        recalcular(e);
+        panelSucio = true;
+    }
+
+    /** Como actualizar(), pero solo marca el panel para redibujar si el estado ha cambiado. Llamar con LOCK. */
+    static void recalcular(EstacionWS e) {
         String nuevo = e.calcularEstado();
         if (!nuevo.equals(e.estado)) {
             e.estado = nuevo;
             bd.actualizarEstado(e.id, nuevo);
+            panelSucio = true;
         }
-        panelSucio = true;
     }
 
     static void imprimirPanel() {

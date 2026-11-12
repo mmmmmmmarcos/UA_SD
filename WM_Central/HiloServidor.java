@@ -44,6 +44,12 @@ public class HiloServidor extends Thread {
                             p.enviar("KO#Formato REGISTER#idWS#ubicacion");
                             break;
                         }
+                        if (!WM_Central.idValido(c[1].trim())) {
+                            // Un ID con ',' o ';' rompia el mensaje estado-red y el listado de TODOS los FO
+                            WM_Central.log("[REGISTRO] DENEGADO: ID de WS no valido '" + c[1].trim() + "' (desde " + origen + ")");
+                            p.enviar("KO#ID de WS no valido (solo letras, numeros, '-' y '_', max. 32)");
+                            break;
+                        }
                         WM_Central.registrarEstacion(c[1].trim(), c[2].trim());
                         p.enviar("OK#REGISTRADA");
                         break;
@@ -58,6 +64,8 @@ public class HiloServidor extends Thread {
                     case "HEALTH": {
                         if (idWS == null) { p.enviar("KO#Monitor no autenticado"); break; }
                         String salud = c.length >= 3 ? c[2].trim() : EstacionWS.SALUD_ENGINE_KO;
+                        // Salud desconocida: no podemos garantizar que la WS este bien -> se trata como averia
+                        if (!EstacionWS.saludValida(salud)) salud = EstacionWS.SALUD_ENGINE_KO;
                         p.enviar(WM_Central.latido(idWS, this, salud));
                         break;
                     }

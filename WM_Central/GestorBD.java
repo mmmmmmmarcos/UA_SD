@@ -85,9 +85,11 @@ public class GestorBD {
     /** Guarda un riego finalizado. Devuelve false si ya estaba guardado (mensaje duplicado). */
     public synchronized boolean guardarRiego(String idRiego, String ws, String operario,
                                              int segundos, double litros, String motivo) {
-        String sql = "INSERT OR IGNORE INTO riegos (id_riego, id_estacion, operario, segundos, litros, motivo) " +
-                "VALUES (?, ?, ?, ?, ?, ?)";
+        // La fecha se pone desde Java (hora local, igual que los logs): CURRENT_TIMESTAMP de SQLite va en UTC
+        String sql = "INSERT OR IGNORE INTO riegos (id_riego, id_estacion, operario, segundos, litros, motivo, fecha) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(7, java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
             ps.setString(1, idRiego);
             ps.setString(2, ws);
             ps.setString(3, operario);

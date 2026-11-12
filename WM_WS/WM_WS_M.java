@@ -31,11 +31,24 @@ public class WM_WS_M {
             System.out.println("Uso: java WM_WS_M <puerto_para_engine> <ip_central:puerto> <id_WS> [ubicacion]");
             System.exit(1);
         }
-        int puertoEngine = Integer.parseInt(args[0]);
-        String[] hp = args[1].split(":");
-        String hostCentral = hp[0];
-        int puertoCentral = Integer.parseInt(hp[1]);
+        int puertoEngine, puertoCentral;
+        String hostCentral;
+        try {
+            puertoEngine = Integer.parseInt(args[0].trim());
+            String[] hp = args[1].split(":");
+            hostCentral = hp[0];
+            puertoCentral = Integer.parseInt(hp[1].trim());
+        } catch (RuntimeException e) {
+            System.out.println("Parametros no validos: el puerto del engine debe ser un numero y la Central ip:puerto.");
+            System.out.println("Uso: java WM_WS_M <puerto_para_engine> <ip_central:puerto> <id_WS> [ubicacion]");
+            System.exit(1);
+            return;
+        }
         idWS = args[2].trim();
+        if (!idWS.matches("[A-Za-z0-9_-]{1,32}")) {
+            System.out.println("ID de WS no valido: '" + idWS + "' (solo letras, numeros, '-' y '_', max. 32)");
+            System.exit(1);
+        }
         ubicacion = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)).trim() : null;
 
         System.out.println(NEGRITA + CIAN + "==============================================");
@@ -43,7 +56,19 @@ public class WM_WS_M {
         System.out.println("  Central: " + hostCentral + ":" + puertoCentral + "  |  Puerto engine: " + puertoEngine);
         System.out.println("==============================================" + RST);
 
-        Thread tEngine = new Thread(() -> servidorEngine(puertoEngine), "engine");
+        // El puerto del engine se abre ANTES de hablar con Central: si esta ocupado, antes el monitor
+        // llegaba a registrar la WS en Central y luego moria.
+        ServerSocket ss;
+        try {
+            ss = new ServerSocket();
+            ss.setReuseAddress(true);
+            ss.bind(new InetSocketAddress(puertoEngine));
+        } catch (IOException e) {
+            log(ROJO + "No se puede abrir el puerto " + puertoEngine + " para el engine: " + e.getMessage());
+            System.exit(3);
+            return;
+        }
+        Thread tEngine = new Thread(() -> servidorEngine(ss, puertoEngine), "engine");
         tEngine.setDaemon(true);
         tEngine.start();
 
@@ -111,10 +136,8 @@ public class WM_WS_M {
 
     // ------------------------------------------------------------------ servidor para el engine
 
-    private static void servidorEngine(int puerto) {
-        try (ServerSocket ss = new ServerSocket()) {
-            ss.setReuseAddress(true);
-            ss.bind(new InetSocketAddress(puerto));
+    private static void servidorEngine(ServerSocket servidor, int puerto) {
+        try (ServerSocket ss = servidor) {
             log("Esperando conexion del engine (WM_WS_E) en el puerto " + puerto + "...");
             while (true) {
                 try (Socket s = ss.accept()) {
@@ -141,7 +164,7 @@ public class WM_WS_M {
                 }
             }
         } catch (IOException e) {
-            log(ROJO + "No se puede abrir el puerto " + puerto + " para el engine: " + e.getMessage());
+            log(ROJO + "Error en el puerto " + puerto + " del engine: " + e.getMessage());
             System.exit(3);
         } catch (InterruptedException ignored) { }
     }

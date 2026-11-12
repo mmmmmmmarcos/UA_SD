@@ -11,6 +11,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.TopicPartition;
 
 /**
  * WM_FO: aplicacion del operario de campo (Field Operator).
@@ -31,7 +33,9 @@ public class WM_FO {
     static final String T_PETICIONES = "peticiones-riego", T_NOTIF = "notificaciones-fo", T_RED = "estado-red";
 
     static String idOperario;
-    static KafkaProducer<String, String> productor;
+    /** Identifica a ESTA ventana de WM_FO (para detectar el mismo operario abierto dos veces). */
+    static final String TOKEN = UUID.randomUUID().toString().substring(0, 8);
+    static volatile KafkaProducer<String, String> productor;   // null hasta que el broker sea accesible
     static final long inicio = System.currentTimeMillis();
     static volatile long ultimoLatido = 0;
     static volatile boolean centralOk = false;
@@ -50,26 +54,36 @@ public class WM_FO {
         String broker = args[0];
         idOperario = args[1].trim();
         String fichero = args.length >= 3 ? args[2] : null;
+        if (!idOperario.matches("[A-Za-z0-9_-]{1,32}")) {
+            System.out.println("ID de operario no valido: '" + idOperario + "' (solo letras, numeros, '-' y '_', max. 32)");
+            System.exit(1);
+        }
 
         System.out.println(NEGRITA + CIAN + "==============================================");
         System.out.println("  WM_FO  -  Operario " + idOperario);
         System.out.println("  Broker: " + broker);
         System.out.println("==============================================" + RST);
 
-        productor = new KafkaProducer<>(KafkaUtil.propsProductor(broker));
-        hilo("kafka", () -> bucleConsumidor(broker));
+        hilo("kafka-productor", () -> productor = KafkaUtil.crearProductor(broker, m -> log(ROJO + m)));
+        hilo("estado-red", () -> bucleRed(broker));
         hilo("vigilante", WM_FO::bucleVigilante);
-        // Latido del operario: asi WM_Central sabe que FO estan conectados y lo muestra en su panel
+        // Latido del operario: asi WM_Central sabe que FO estan conectados y lo muestra en su panel.
+        // Lleva el TOKEN de esta ventana para que la Central detecte un mismo ID abierto dos veces.
         hilo("latido", () -> {
             while (true) {
-                try { productor.send(new ProducerRecord<>(T_PETICIONES, idOperario, "LATIDO#" + idOperario)); }
-                catch (Exception ignored) { /* Kafka caido: lo detecta el vigilante */ }
+                KafkaProducer<String, String> p = productor;
+                if (p != null) {
+                    try { p.send(new ProducerRecord<>(T_PETICIONES, idOperario, "LATIDO#" + idOperario + "#" + TOKEN)); }
+                    catch (Exception ignored) { /* Kafka caido: lo detecta el vigilante */ }
+                }
                 dormir(2000);
             }
         });
 
         log("Conectando con WM_Central...");
-        for (int i = 0; i < 20 && !centralOk; i++) Thread.sleep(500);
+        comprobarDuplicado();
+        // Solo despues de comprobar que no hay otra ventana con este ID nos unimos al grupo del operario
+        hilo("kafka", () -> bucleConsumidor(broker));
         if (!centralOk) log(ROJO + NEGRITA + "Imposible conectar con WM_Central. Se seguira intentando.");
 
         if (fichero != null) ejecutarFichero(fichero);
@@ -81,26 +95,98 @@ public class WM_FO {
     private static void bucleConsumidor(String broker) {
         // Grupo fijo por operario -> Kafka recuerda por donde se quedo leyendo (recuperacion tras caida)
         Properties p = KafkaUtil.propsConsumidor(broker, "wm-fo-" + idOperario, "latest", "fo-" + idOperario);
+        String ultimoError = null;   // el mismo error solo se muestra una vez (si no, sale cada 3 s)
         while (true) {
             try (KafkaConsumer<String, String> c = new KafkaConsumer<>(p)) {
-                c.subscribe(List.of(T_NOTIF, T_RED));
+                ultimoError = null;
+                c.subscribe(List.of(T_NOTIF));
                 while (true) {
                     for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
-                        if (T_RED.equals(r.topic())) {
-                            if (System.currentTimeMillis() - r.timestamp() < 10_000) {
-                                red = r.value();
-                                ultimoLatido = System.currentTimeMillis();
-                            }
-                        } else if (idOperario.equals(r.key())) {
+                        if (idOperario.equals(r.key())) {
                             mostrarNotificacion(r.value(), r.timestamp() < inicio - 2000);
                         }
                     }
                 }
             } catch (Exception e) {
-                log(ROJO + "Error con el broker Kafka: " + e.getMessage() + ". Reintentando...");
+                if (!String.valueOf(e.getMessage()).equals(ultimoError)) {
+                    ultimoError = String.valueOf(e.getMessage());
+                    log(ROJO + "Error con el broker Kafka: " + ultimoError + ". Reintentando...");
+                }
                 dormir(3000);
             }
         }
+    }
+
+    /**
+     * Latido de la Central (topic estado-red). Se lee SIN grupo de consumidores (assign): cada ventana
+     * recibe todos los latidos aunque haya otra con el mismo ID, y asi puede detectar que es un duplicado.
+     */
+    private static void bucleRed(String broker) {
+        Properties p = KafkaUtil.propsConsumidor(broker, "sin-grupo", "latest");
+        p.remove("group.id");
+        p.put("enable.auto.commit", "false");
+        while (true) {
+            try (KafkaConsumer<String, String> c = new KafkaConsumer<>(p)) {
+                List<TopicPartition> parts = new ArrayList<>();
+                List<PartitionInfo> info = c.partitionsFor(T_RED);
+                if (info != null) for (PartitionInfo pi : info) parts.add(new TopicPartition(T_RED, pi.partition()));
+                if (parts.isEmpty()) throw new IllegalStateException("el topic " + T_RED + " aun no existe");
+                c.assign(parts);
+                c.seekToEnd(parts);
+                while (true) {
+                    for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
+                        if (System.currentTimeMillis() - r.timestamp() < 10_000) {
+                            red = r.value();
+                            ultimoLatido = System.currentTimeMillis();
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                dormir(3000);   // el vigilante ya avisa de "Imposible conectar con WM_Central"
+            }
+        }
+    }
+
+    /**
+     * Antes de unirse al grupo Kafka del operario, comprueba que no haya otra ventana abierta con el mismo ID:
+     * dos consumidores con el mismo group.instance.id se expulsan mutuamente y uno se queda sin notificaciones.
+     * La Central publica en estado-red el token de la ventana aceptada para cada operario.
+     * Si el token es de otra ventana, se espera un poco por si es una sesion anterior que se cayo
+     * (la Central la olvida a los 6 s sin latidos) y, si sigue ahi, se cierra este FO.
+     */
+    private static void comprobarDuplicado() {
+        long t0 = System.currentTimeMillis();
+        boolean avisado = false;
+        while (true) {
+            long pasado = System.currentTimeMillis() - t0;
+            String t = tokenEnRed();
+            if (TOKEN.equals(t)) return;                                  // la Central nos ha aceptado
+            if (red.isEmpty() && pasado > 10_000) return;                 // sin Central: no se puede comprobar
+            if (t != null && !t.isEmpty()) {
+                if (!avisado) {
+                    log(AMARILLO + "WM_Central ya tiene un " + idOperario + " conectado. Comprobando si es una sesion anterior que se cayo...");
+                    avisado = true;
+                }
+                if (pasado > 14_000) {
+                    log(ROJO + NEGRITA + "Ya hay otra ventana del operario " + idOperario
+                            + " conectada a WM_Central. Cierra la otra o usa otro ID. Saliendo.");
+                    System.exit(2);
+                }
+            }
+            if (pasado > 20_000) return;   // Central no confirma (version antigua?): seguimos
+            dormir(500);
+        }
+    }
+
+    /** Token que la Central tiene aceptado para este operario (null si no aparece en el ultimo estado-red). */
+    private static String tokenEnRed() {
+        String[] c = red.split("#", -1);   // RED#ts#estaciones#operario=token;...
+        if (c.length < 4) return null;
+        for (String par : c[3].split(";")) {
+            int i = par.indexOf('=');
+            if (i > 0 && par.substring(0, i).equals(idOperario)) return par.substring(i + 1);
+        }
+        return null;
     }
 
     /** NOTIF#operario#idPeticion#TIPO#texto */
@@ -143,7 +229,7 @@ public class WM_FO {
 
     /** Devuelve el id de la peticion o null si no se pudo enviar. */
     private static String solicitarRiego(String ws, int segundos) {
-        if (!centralOk) {
+        if (!centralOk || productor == null) {
             log(ROJO + "Imposible conectar con WM_Central: peticion NO enviada.");
             return null;
         }
@@ -161,7 +247,7 @@ public class WM_FO {
     }
 
     private static void pararRiego(String ws) {
-        if (!centralOk) { log(ROJO + "Imposible conectar con WM_Central."); return; }
+        if (!centralOk || productor == null) { log(ROJO + "Imposible conectar con WM_Central."); return; }
         String msg = "PARAR#" + idOperario + "-" + System.currentTimeMillis() + "#" + idOperario + "#" + ws;
         try {
             productor.send(new ProducerRecord<>(T_PETICIONES, idOperario, msg)).get(8, TimeUnit.SECONDS);
@@ -192,7 +278,7 @@ public class WM_FO {
             n++;
             log(NEGRITA + "--- Fichero: servicio " + n + " -> " + c[0].trim() + " (" + (seg == 0 ? "sin limite" : seg + " s") + ") ---");
 
-            String idPet = solicitarRiego(c[0].trim(), seg);
+            String idPet = solicitarRiego(c[0].trim().toUpperCase(), seg);   // igual que en el menu
             if (idPet != null) {
                 // riego sin limite: se espera hasta que alguien lo pare
                 String res = esperarConclusion(idPet, seg == 0 ? Long.MAX_VALUE / 4 : (seg + 60) * 1000L);
@@ -247,7 +333,7 @@ public class WM_FO {
                     if (f != null) ejecutarFichero(f);
                 } else if (cmd.equals("S")) {
                     log("Saliendo...");
-                    productor.close(Duration.ofSeconds(2));
+                    if (productor != null) productor.close(Duration.ofSeconds(2));
                     System.exit(0);
                 } else {
                     imprimirMenu();
@@ -280,11 +366,13 @@ public class WM_FO {
             log(ROJO + "Imposible conectar con WM_Central: no hay informacion de las estaciones.");
             return;
         }
-        String[] c = red.split("#", 3);
+        String[] c = red.split("#", -1);   // RED#ts#ws,ubicacion,estado;...#operarios
+        if (c.length < 3) { log(ROJO + "Estado de la red no valido."); return; }
         System.out.println(NEGRITA + "  ESTACION  UBICACION              ESTADO" + RST);
         for (String e : c[2].split(";")) {
             if (e.isBlank()) continue;
             String[] f = e.split(",");
+            if (f.length < 3) continue;   // entrada mal formada (p.ej. un ID antiguo con ',' en la BD): se salta
             String col;
             switch (f[2]) {
                 case "AVAILABLE": col = VERDE + NEGRITA; break;
