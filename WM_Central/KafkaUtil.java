@@ -1,8 +1,35 @@
 import java.util.Properties;
+import java.util.function.Consumer;
+
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.common.KafkaException;
 
 /** Configuracion comun de productores y consumidores Kafka (igual en todos los modulos). */
 public final class KafkaUtil {
     private KafkaUtil() { }
+
+    /**
+     * Crea el productor reintentando cada 3 s. Si el nombre del broker no resuelve (errata en lab.env,
+     * DNS de Railway aun sin preparar...) el constructor de KafkaProducer lanza una excepcion y antes
+     * el programa moria con un stack trace. Llamar desde un hilo propio: bloquea hasta conseguirlo.
+     */
+    public static KafkaProducer<String, String> crearProductor(String broker, Consumer<String> log) {
+        boolean avisado = false;
+        while (true) {
+            try {
+                KafkaProducer<String, String> p = new KafkaProducer<>(propsProductor(broker));
+                if (avisado) log.accept("[KAFKA] Productor creado: el broker " + broker + " ya es accesible");
+                return p;
+            } catch (KafkaException e) {
+                if (!avisado) {
+                    log.accept("[KAFKA] No se puede contactar con el broker " + broker + " ("
+                            + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()) + "). Reintentando cada 3 s...");
+                    avisado = true;
+                }
+                try { Thread.sleep(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return null; }
+            }
+        }
+    }
 
     public static Properties propsProductor(String broker) {
         Properties p = new Properties();

@@ -15,6 +15,10 @@ public class EstacionWS {
     public static final String SALUD_FUGA = "FUGA";
     public static final String SALUD_ENGINE_KO = "ENGINE_KO";
 
+    static boolean saludValida(String s) {
+        return SALUD_OK_IDLE.equals(s) || SALUD_OK_REGANDO.equals(s) || SALUD_FUGA.equals(s) || SALUD_ENGINE_KO.equals(s);
+    }
+
     final String id;
     String ubicacion;
     String estado = DISCONNECTED;

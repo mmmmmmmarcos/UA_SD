@@ -34,9 +34,18 @@ public class ServidorWeb {
 
         srv.createContext("/api/orden", ex -> {
             Map<String, String> q = query(ex);
-            int seg;
-            try { seg = Integer.parseInt(q.getOrDefault("segundos", "10")); } catch (NumberFormatException e) { seg = 10; }
-            String res = WM_Central.ordenCentral(q.getOrDefault("accion", ""), q.getOrDefault("ws", ""), seg);
+            String accion = q.getOrDefault("accion", "");
+            int seg = 10;
+            // Los segundos solo importan en REGAR; antes un valor no numerico se convertia en 10 sin avisar
+            if ("REGAR".equalsIgnoreCase(accion)) {
+                String txt = q.getOrDefault("segundos", "10").trim();
+                try { seg = Integer.parseInt(txt); }
+                catch (NumberFormatException e) {
+                    responder(ex, 400, "text/plain; charset=UTF-8", "Segundos no validos: '" + txt + "' (1-3600, o 0 = sin limite)");
+                    return;
+                }
+            }
+            String res = WM_Central.ordenCentral(accion, q.getOrDefault("ws", ""), seg);
             responder(ex, 200, "text/plain; charset=UTF-8", res);
         });
 
@@ -44,7 +53,10 @@ public class ServidorWeb {
             Map<String, String> q = query(ex);
             String id = q.getOrDefault("id", "").trim();
             String nombre = q.getOrDefault("nombre", id).trim();
-            if (id.isEmpty() || id.contains("#")) { responder(ex, 400, "text/plain", "Id no valido"); return; }
+            if (!WM_Central.idValido(id)) {
+                responder(ex, 400, "text/plain; charset=UTF-8", "Id no valido (solo letras, numeros, '-' y '_', max. 32)");
+                return;
+            }
             WM_Central.bd.altaOperario(id, nombre);
             WM_Central.log("[REGISTRO] Operario dado de alta: " + id + " (" + nombre + ")");
             responder(ex, 200, "text/plain; charset=UTF-8", "Operario " + id + " registrado");
