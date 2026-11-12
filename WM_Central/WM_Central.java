@@ -388,8 +388,8 @@ public class WM_Central {
                         e.caudal = caudal;
                         e.volumen = volumen;
                         e.pendienteDesde = 0;
-                        notificar(op, id, "TEL", String.format(Locale.ROOT, "%s regando | %.1f L/min | %.2f L | %d/%s s",
-                                ws, e.caudal, e.volumen, e.segundos, e.objetivo == 0 ? "sin limite" : String.valueOf(e.objetivo)));
+                        notificar(op, id, "TEL", String.format(Locale.ROOT, "%s regando | %.1f L/min | %.2f L | %s",
+                                ws, e.caudal, e.volumen, progreso(e.segundos, e.objetivo)));
                         panelSucio = true;
                     }
                     break;
@@ -667,6 +667,11 @@ public class WM_Central {
             registro.addFirst(l);
             while (registro.size() > 150) registro.removeLast();
         }
+    }
+
+    /** Progreso del riego: "12/30 s" o, si es sin limite, "12 s (sin limite)". */
+    static String progreso(int segundos, int objetivo) {
+        return objetivo == 0 ? segundos + " s (sin limite)" : segundos + "/" + objetivo + " s";
     }
 
     /** Duracion para mostrar: 0 segundos = riego sin limite (hasta que alguien lo pare). */

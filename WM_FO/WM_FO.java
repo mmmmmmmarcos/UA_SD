@@ -37,6 +37,11 @@ public class WM_FO {
     static final String TOKEN = UUID.randomUUID().toString().substring(0, 8);
     /** true cuando esta ventana ya se ha unido al grupo Kafka del operario (tras comprobar duplicados). */
     static volatile boolean unido = false;
+    /** Cada cuanto se imprime la telemetria de un riego en curso (llega cada segundo). */
+    static final long TEL_CADA_MS = 10_000;
+    /** idPeticion -> ultimo texto de telemetria recibido / instante en que se imprimio por ultima vez. */
+    static final Map<String, String> telemetria = new LinkedHashMap<>();
+    static final Map<String, Long> telMostrada = new HashMap<>();
     static volatile KafkaProducer<String, String> productor;   // null hasta que el broker sea accesible
     static final long inicio = System.currentTimeMillis();
     static volatile long ultimoLatido = 0;
@@ -201,12 +206,29 @@ public class WM_FO {
         String color;
         switch (tipo) {
             case "AUTORIZADA": case "INICIO": color = VERDE + NEGRITA; break;
-            case "TEL": color = VERDE; texto = "  ~ " + texto; break;
+            case "TEL": {
+                // La telemetria llega cada segundo: imprimirla toda llenaba la terminal y no daba tiempo a
+                // escribir "P WS-xx". Se guarda siempre (comando T) pero solo se muestra cada TEL_CADA_MS.
+                long ahora = System.currentTimeMillis();
+                synchronized (telemetria) {
+                    telemetria.put(idPet, texto);
+                    Long ultimo = telMostrada.get(idPet);
+                    if (ultimo != null && ahora - ultimo < TEL_CADA_MS) return;
+                    telMostrada.put(idPet, ahora);
+                }
+                color = VERDE;
+                texto = "  ~ " + texto + GRIS + "  (cada " + TEL_CADA_MS / 1000 + " s; T = ver ahora)";
+                break;
+            }
             case "DENEGADA": case "ERROR": color = ROJO + NEGRITA; break;
             case "FIN": color = CIAN + NEGRITA; break;
             default: color = "";
         }
         log(pre + color + texto);
+
+        if (tipo.equals("FIN") || tipo.equals("DENEGADA")) {
+            synchronized (telemetria) { telemetria.remove(idPet); telMostrada.remove(idPet); }   // riego terminado
+        }
 
         if (idPet.equals(peticionEsperada) && (tipo.equals("DENEGADA") || tipo.equals("FIN") || tipo.equals("ERROR"))) {
             synchronized (ESPERA) {
@@ -344,6 +366,11 @@ public class WM_FO {
                     if (ws != null && seg != null) solicitarRiego(ws.toUpperCase(), parseSegundos(seg));
                 } else if (cmd.equals("L")) {
                     listarEstaciones();
+                } else if (cmd.equals("T")) {
+                    synchronized (telemetria) {
+                        if (telemetria.isEmpty()) log("No tiene riegos en curso.");
+                        for (String t : telemetria.values()) log(VERDE + "  ~ " + t);
+                    }
                 } else if (cmd.equals("P")) {
                     String ws = in.length > 1 ? in[1] : preguntar(sc, "Estacion a parar: ");
                     if (ws != null) pararRiego(ws.toUpperCase());
@@ -411,6 +438,7 @@ public class WM_FO {
         System.out.println(" WS-01#INF       Riego SIN LIMITE (se para con P WS-01)");
         System.out.println(" R [ws] [seg]    Pedir riego (seg = numero o INF)");
         System.out.println(" L               Ver estaciones y su estado");
+        System.out.println(" T               Ver ahora la telemetria de mis riegos (se imprime sola cada 10 s)");
         System.out.println(" P [ws]          Parar mi riego en una estacion");
         System.out.println(" F [fichero]     Ejecutar fichero de peticiones");
         System.out.println(" S               Salir");
