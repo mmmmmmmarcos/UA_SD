@@ -173,7 +173,9 @@ public class WM_WS_M {
 
     private static String describir(String salud) {
         switch (salud) {
-            case "OK_IDLE": return VERDE + "DISPONIBLE (engine OK)" + RST;
+            case "OK_IDLE":   // bloqueada: el engine esta bien, pero la WS no esta disponible
+                return "BLOQUEADA".equals(estadoCentral) ? AMARILLO + "ENGINE OK (estacion bloqueada por Central)" + RST
+                        : VERDE + "DISPONIBLE (engine OK)" + RST;
             case "OK_REGANDO": return VERDE + "REGANDO" + RST;
             case "FUGA": return ROJO + "FUGA" + RST;
             default: return ROJO + "AVERIADA (engine sin respuesta)" + RST;

@@ -35,6 +35,8 @@ public class WM_FO {
     static String idOperario;
     /** Identifica a ESTA ventana de WM_FO (para detectar el mismo operario abierto dos veces). */
     static final String TOKEN = UUID.randomUUID().toString().substring(0, 8);
+    /** true cuando esta ventana ya se ha unido al grupo Kafka del operario (tras comprobar duplicados). */
+    static volatile boolean unido = false;
     static volatile KafkaProducer<String, String> productor;   // null hasta que el broker sea accesible
     static final long inicio = System.currentTimeMillis();
     static volatile long ultimoLatido = 0;
@@ -83,6 +85,7 @@ public class WM_FO {
         log("Conectando con WM_Central...");
         comprobarDuplicado();
         // Solo despues de comprobar que no hay otra ventana con este ID nos unimos al grupo del operario
+        unido = true;
         hilo("kafka", () -> bucleConsumidor(broker));
         if (!centralOk) log(ROJO + NEGRITA + "Imposible conectar con WM_Central. Se seguira intentando.");
 
@@ -214,6 +217,7 @@ public class WM_FO {
     }
 
     private static void bucleVigilante() {
+        long otroTokenDesde = 0;
         while (true) {
             dormir(1000);
             boolean ok = System.currentTimeMillis() - ultimoLatido < 6000;
@@ -221,6 +225,21 @@ public class WM_FO {
                 centralOk = ok;
                 if (ok) log(VERDE + NEGRITA + "Conectado con WM_Central");
                 else log(ROJO + NEGRITA + "Imposible conectar con WM_Central (sin noticias de la Central / Kafka)");
+            }
+            // Duplicado detectado DESPUES de arrancar: p.ej. la otra ventana se abrio con la Central caida
+            // (no se pudo comprobar al inicio). La Central solo acepta un token por operario: si durante
+            // 10 s seguidos el aceptado no es el nuestro, esta ventana sobra y se cierra para no repartirse
+            // las notificaciones con la otra.
+            String t = ok && unido ? tokenEnRed() : null;
+            if (t != null && !t.isEmpty() && !TOKEN.equals(t)) {
+                if (otroTokenDesde == 0) otroTokenDesde = System.currentTimeMillis();
+                else if (System.currentTimeMillis() - otroTokenDesde > 10_000) {
+                    log(ROJO + NEGRITA + "Hay otra ventana del operario " + idOperario
+                            + " conectada a WM_Central y la Central atiende a esa. Cierra una de las dos. Saliendo.");
+                    System.exit(2);
+                }
+            } else {
+                otroTokenDesde = 0;
             }
         }
     }
