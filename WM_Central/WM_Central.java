@@ -84,6 +84,12 @@ public class WM_Central {
         // 1. Base de datos: cargar WS registradas (todas DESCONECTADAS hasta que conecten)
         bd = new GestorBD(rutaBD);
         for (String[] f : bd.cargarEstaciones()) {
+            // WS registradas antes de validar los IDs: con ',' o ';' romperian el mensaje estado-red
+            // (en los FO salian como estaciones fantasma). Se ignoran y se avisa para borrarlas a mano.
+            if (!idValido(f[0])) {
+                log("[SQLITE] AVISO: se ignora la WS '" + f[0] + "' de la BD: ID no valido (solo letras, numeros, '-' y '_')");
+                continue;
+            }
             EstacionWS e = new EstacionWS(f[0], f[1]);
             e.bloqueada = "1".equals(f[2]);
             e.litrosTotales = Double.parseDouble(f[3]);
@@ -281,6 +287,9 @@ public class WM_Central {
                     log("[PETICION] " + op + " solicita parar el riego de " + ws);
                     enviarOrden(ws, "PARAR#" + ws + "#PARADA_POR_" + op);
                     notificar(op, e.idRiego, "INFO", "Orden de parada enviada a " + ws);
+                } else if (e != null && e.tieneRiego()) {
+                    // Antes decia "No tiene ningun riego activo", que confundia si la WS si estaba regando para otro
+                    notificar(op, idPet, "DENEGADA", "No puede parar " + ws + ": el riego en curso es de otro operario");
                 } else {
                     notificar(op, idPet, "INFO", "No tiene ningun riego activo en " + ws);
                 }
@@ -342,14 +351,18 @@ public class WM_Central {
             EstacionWS e = estaciones.get(ws);
             if (e == null) return;
             switch (tipo) {
-                case "INICIO":
+                case "INICIO": {
                     // INICIO viejo (p.ej. releido tras reiniciar la Central) o de un riego ya cerrado: ignorar,
                     // si no la WS se quedaba "regando" un riego que ya no existe
                     if (!reciente || finalizados.contains(id)) return;
+                    // Primero se convierten los numeros y despues se toca el estado: si el mensaje viene mal
+                    // formado salta la excepcion sin dejar la WS a medias (antes quedaba "regando" sin riego)
+                    int objetivo = Integer.parseInt(c[4]);
+                    double caudal = Double.parseDouble(c[5]);
                     e.idRiego = id;
                     e.operario = op;
-                    e.objetivo = Integer.parseInt(c[4]);
-                    e.caudal = Double.parseDouble(c[5]);
+                    e.objetivo = objetivo;
+                    e.caudal = caudal;
                     e.segundos = 0;
                     e.volumen = 0;
                     e.pendienteDesde = 0;
@@ -358,16 +371,22 @@ public class WM_Central {
                     notificar(op, id, "INICIO", ws + ": electrovalvula abierta, regando " + durTxt(e.objetivo));
                     actualizar(e);
                     break;
+                }
                 case "TEL":
                     if (!reciente || finalizados.contains(id)) return; // vieja o de un riego ya terminado
                     if (!e.tieneRiego() || e.idRiego.equals(id)) {
+                        // Igual que en INICIO: convertir antes de modificar el estado
+                        int segundos = Integer.parseInt(c[4]);
+                        int objetivo = Integer.parseInt(c[5]);
+                        double caudal = Double.parseDouble(c[6]);
+                        double volumen = Double.parseDouble(c[7]);
                         e.ultimaActividad = System.currentTimeMillis();
                         e.idRiego = id;
                         e.operario = op;
-                        e.segundos = Integer.parseInt(c[4]);
-                        e.objetivo = Integer.parseInt(c[5]);
-                        e.caudal = Double.parseDouble(c[6]);
-                        e.volumen = Double.parseDouble(c[7]);
+                        e.segundos = segundos;
+                        e.objetivo = objetivo;
+                        e.caudal = caudal;
+                        e.volumen = volumen;
                         e.pendienteDesde = 0;
                         notificar(op, id, "TEL", String.format(Locale.ROOT, "%s regando | %.1f L/min | %.2f L | %d/%s s",
                                 ws, e.caudal, e.volumen, e.segundos, e.objetivo == 0 ? "sin limite" : String.valueOf(e.objetivo)));
