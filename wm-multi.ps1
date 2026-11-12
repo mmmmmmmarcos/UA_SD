@@ -6,6 +6,8 @@
     .\wm-multi.ps1 -WS 3 -FO 2                       # WS-01..WS-03 y FO-01..FO-02
     .\wm-multi.ps1 -WS 2 -WSInicio 4                 # WS-04 y WS-05
     .\wm-multi.ps1 -FO 5 -Peticiones WM_FO\peticiones.txt   # 5 operarios leyendo el fichero
+    .\wm-multi.ps1 -WS 2 -WSInicio 4 -Nombres "Parque Este","Plaza Mayor"   # con nombre propio
+    .\wm-multi.ps1 -WS 3 -WSInicio 4 -Preguntar      # te pregunta el nombre de cada estacion
     .\wm-multi.ps1 -Parar                            # para todos los contenedores wm-*
 
   Las WS 1-3 usan su ubicacion registrada (Parque Norte, Jardin Central, Parque Sur);
@@ -17,6 +19,8 @@ param(
     [int]$WSInicio = 1,
     [int]$FOInicio = 1,
     [string]$Peticiones = "",
+    [string[]]$Nombres = @(),
+    [switch]$Preguntar,
     [switch]$Parar
 )
 
@@ -33,7 +37,11 @@ if ($LASTEXITCODE -ne 0) { & $wm construir }
 
 for ($i = $WSInicio; $i -lt $WSInicio + $WS; $i++) {
     $id = "WS-{0:00}" -f $i
-    if ($conocidas.ContainsKey($i)) { & $wm ws $id $conocidas[$i] } else { & $wm ws $id }
+    $nombre = $null
+    if ($Nombres.Count -gt ($i - $WSInicio)) { $nombre = $Nombres[$i - $WSInicio] }          # -Nombres "A","B"
+    elseif ($Preguntar) { $nombre = Read-Host "Nombre para $id (Enter = por defecto)" }       # -Preguntar
+    if (-not $nombre -and $conocidas.ContainsKey($i)) { $nombre = $conocidas[$i] }
+    if ($nombre) { & $wm ws $id $nombre } else { & $wm ws $id }
     Start-Sleep -Seconds 1
 }
 
