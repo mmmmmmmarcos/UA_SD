@@ -82,8 +82,8 @@ public class EstacionWS {
         switch (estado) {
             case WATERING:
                 if (pendienteDesde > 0 && segundos == 0) return "Autorizado, abriendo valvula... (Op: " + operario + ")";
-                return String.format(java.util.Locale.ROOT, "%.1f L/min | %.2f L | %d/%s s | Op: %s",
-                        caudal, volumen, segundos, objetivo == 0 ? "sin limite" : String.valueOf(objetivo), operario);
+                return String.format(java.util.Locale.ROOT, "%.1f L/min | %.2f L | %s | Op: %s",
+                        caudal, volumen, WM_Central.progreso(segundos, objetivo), operario);
             case LEAK:
                 return SALUD_ENGINE_KO.equals(salud) ? "AVERIADA: engine sin respuesta" : "FUGA detectada";
             case OUT_OF_SERVICE:
