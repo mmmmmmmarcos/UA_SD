@@ -111,7 +111,7 @@ public class WM_FO {
                 while (true) {
                     for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
                         if (idOperario.equals(r.key())) {
-                            mostrarNotificacion(r.value(), r.timestamp() < inicio - 2000);
+                            mostrarNotificacion(r.value(), false);   // sin comparar relojes de maquinas distintas
                         }
                     }
                 }
@@ -143,7 +143,7 @@ public class WM_FO {
                 c.seekToEnd(parts);
                 while (true) {
                     for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
-                        if (System.currentTimeMillis() - r.timestamp() < 10_000) {
+                        {   // sin filtro de antiguedad: seekToEnd ya garantiza que solo llegan latidos nuevos (relojes desfasados)
                             red = r.value();
                             ultimoLatido = System.currentTimeMillis();
                         }
