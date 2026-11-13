@@ -169,7 +169,7 @@ public class WM_WS_E {
                 c.subscribe(List.of(T_ORDENES));
                 while (true) {
                     for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
-                        if (System.currentTimeMillis() - r.timestamp() > 15_000) continue; // orden caducada
+                        // sin filtro de antiguedad: grupo aleatorio + latest ya garantiza que solo llegan ordenes nuevas (relojes desfasados)
                         String[] o = r.value().split("#", -1);
                         if (o.length < 2 || !(o[1].equals(idWS) || o[1].equalsIgnoreCase("ALL"))) continue;
                         try {
